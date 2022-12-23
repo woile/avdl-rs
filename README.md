@@ -7,7 +7,7 @@
 - [x] [Enums](https://avro.apache.org/docs/1.11.1/idl-language/#defining-an-enumeration)
 - [x] [Alias](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Namespace](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
-- [ ] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
+- [x] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [ ] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
 - [ ] [Records and errors](https://avro.apache.org/docs/1.11.1/idl-language/#defining-records-and-errors)
     - [x] Record
