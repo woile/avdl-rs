@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use apache_avro::schema::{Alias, Aliases, Name, RecordField, RecordFieldOrder, Schema, Namespace};
+use apache_avro::schema::{Alias, Aliases, Name, Namespace, RecordField, RecordFieldOrder, Schema};
 use nom::{
-    branch::alt,
+    branch::{alt, permutation},
     bytes::complete::{escaped, is_a, tag, take_until, take_while, take_while1},
     character::{
         complete::{alphanumeric0, alphanumeric1, anychar, char, digit1, line_ending, multispace0},
@@ -11,7 +11,7 @@ use nom::{
     },
     combinator::{cut, map, map_res, opt, recognize, value},
     error::context,
-    multi::{many0, many1, separated_list1},
+    multi::{many0, many1, separated_list1, self},
     sequence::{delimited, preceded, terminated, tuple},
     AsChar, IResult, InputIter, InputTake, InputTakeAtPosition, Parser,
 };
@@ -50,7 +50,11 @@ where
     delimited(multispace0, parser, multispace0)
 }
 
-// Example: @aliases(["org.foo.KindOf"])
+// Example:
+// ```
+// @aliases(["org.foo.KindOf"])
+// ```
+// TODO: Take into account spaces
 fn parse_aliases(i: &str) -> IResult<&str, Vec<Alias>> {
     preceded(
         tag("@aliases"),
@@ -59,9 +63,7 @@ fn parse_aliases(i: &str) -> IResult<&str, Vec<Alias>> {
             separated_list1(
                 space_delimited(tag(",")),
                 // delimited(multispace0, tag(","), multispace0),
-                map_res(parse_namespace_value, |namespace| {
-                    Alias::new(&namespace)
-                }),
+                map_res(parse_namespace_value, |namespace| Alias::new(&namespace)),
             ),
             tag("])"),
         ),
@@ -71,17 +73,23 @@ fn parse_aliases(i: &str) -> IResult<&str, Vec<Alias>> {
 // TODO: First and last letter should be alpha only
 fn parse_namespace_value(input: &str) -> IResult<&str, String> {
     let ns = take_while(|c| char::is_alphanumeric(c) || c == '.' || c == '_');
-    map(delimited(char('"'), ns, char('"')), |s: &str| String::from(s))(input)
+    map(delimited(char('"'), ns, char('"')), |s: &str| {
+        String::from(s)
+    })(input)
 }
 
+// Example:
+// ```
+// @namespace("org.foo.KindOf")
+// ```
 fn parse_namespace(input: &str) -> IResult<&str, String> {
     preceded(
         tag("@namespace"),
-            delimited(
-                space_delimited(tag("(")),
-                parse_namespace_value,
-                preceded(multispace0, tag(")")),
-            )
+        delimited(
+            space_delimited(tag("(")),
+            parse_namespace_value,
+            preceded(multispace0, tag(")")),
+        ),
     )(input)
 }
 
@@ -311,19 +319,28 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
     )(input)
 }
 
-/// Sample of record
-/// ```
-/// record Employee {
-///     string name;
-///     boolean active = true;
-///     long salary;
-/// }
-/// ```
-/// This function will return an error if ...
+// Sample of record
+// ```
+// record Employee {
+//     string name;
+//     boolean active = true;
+//     long salary;
+// }
+// ```
 pub fn parse_record(input: &str) -> IResult<&str, Schema> {
-    let (tail, (namespace, aliases, name, fields)) = tuple((
-        opt(terminated(parse_namespace,tuple((line_ending, opt(multispace0))))),
-        terminated(parse_aliases, line_ending),
+    let (tail, ((namespace, aliases), name, fields)) = tuple((
+        // TODO: Review this permutation, it's only working one of the two permutations
+        // Follow https://github.com/Geal/nom/issues/1153
+        permutation((
+            opt(terminated(
+                preceded(multispace0, parse_namespace),
+                tuple((line_ending, multispace0)),
+            )),
+            opt(terminated(
+                preceded(multispace0, parse_aliases),
+                tuple((line_ending, multispace0)),
+            )),
+        )),
         preceded(multispace0, parse_record_name),
         preceded(
             multispace0,
@@ -338,12 +355,11 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
 
     name.namespace = namespace;
 
-
     Ok((
         tail,
         Schema::Record {
             name: name,
-            aliases: Some(aliases),
+            aliases: aliases,
             doc: None,
             fields: fields,
             lookup: BTreeMap::new(),
@@ -351,16 +367,34 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
     ))
 }
 
+pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
+    let (tail, (_name, schema)) = tuple((
+        preceded(
+            multispace0,
+            preceded(tag("protocol"),
+            space_delimited(alphanumeric1),
+        )
+        ),
+        delimited(
+            space_delimited(tag("{")),
+            many1(space_delimited(parse_record)),
+            preceded(multispace0, tag("}")),
+        )
+    ))(input)?;
+    Ok((tail, schema))
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::BTreeMap;
 
     use super::{
-        parse_namespace_value, parse_aliases, parse_boolean, parse_doc, parse_double, parse_enum,
-        parse_enum_default, parse_enum_item, parse_enum_symbols, parse_field, parse_float,
-        parse_int, parse_long, parse_record, parse_record_name, parse_string, parse_namespace
+        parse_aliases, parse_boolean, parse_doc, parse_double, parse_enum, parse_enum_default,
+        parse_enum_item, parse_enum_symbols, parse_field, parse_float, parse_int, parse_long,
+        parse_namespace, parse_namespace_value, parse_record, parse_record_name, parse_string,
+        parse_protocol
     };
-    use apache_avro::{schema::{Alias, Name, RecordField, Schema, RecordFieldOrder}};
+    use apache_avro::schema::{Alias, Name, RecordField, RecordFieldOrder, Schema};
     use rstest::rstest;
     use serde_json::{Number, Value};
 
@@ -595,12 +629,24 @@ mod test {
     }
 
     #[rstest]
-    #[case(r#"@namespace("org.apache.avro.test")"#, String::from("org.apache.avro.test"))]
-    #[case(r#"@namespace  ( "org.apache.avro.test" )"#, String::from("org.apache.avro.test"))]
-    #[case(r#"@namespace  ( "org.apache.avro.test" )"#, String::from("org.apache.avro.test"))]
-    #[case(r#"@namespace  (
+    #[case(
+        r#"@namespace("org.apache.avro.test")"#,
+        String::from("org.apache.avro.test")
+    )]
+    #[case(
+        r#"@namespace  ( "org.apache.avro.test" )"#,
+        String::from("org.apache.avro.test")
+    )]
+    #[case(
+        r#"@namespace  ( "org.apache.avro.test" )"#,
+        String::from("org.apache.avro.test")
+    )]
+    #[case(
+        r#"@namespace  (
         "org.apache.avro.test"
-    )"#, String::from("org.apache.avro.test"))]
+    )"#,
+        String::from("org.apache.avro.test")
+    )]
     fn test_parse_namespace(#[case] input: &str, #[case] expected: String) {
         assert_eq!(parse_namespace(input), Ok(("", expected)));
     }
@@ -680,62 +726,74 @@ mod test {
                 name: "Employee".into(),
                 namespace: None,
             },
-            aliases: Some(
-                vec![
-                    Alias::new("org.old.OldRecord".into()).unwrap(),
-                    Alias::new("org.ancient.AncientRecord".into()).unwrap(),
-                ],
-            ),
+            aliases: Some(vec![
+                Alias::new("org.old.OldRecord".into()).unwrap(),
+                Alias::new("org.ancient.AncientRecord".into()).unwrap(),
+            ]),
             doc: None,
-            fields: vec![
-                RecordField {
-                    name: "name".into(),
-                    doc: None,
-                    default: None,
-                    schema: Schema::String,
-                    order: RecordFieldOrder::Ascending,
-                    position: 0,
-                },
-            ],
+            fields: vec![RecordField {
+                name: "name".into(),
+                doc: None,
+                default: None,
+                schema: Schema::String,
+                order: RecordFieldOrder::Ascending,
+                position: 0,
+            }],
             lookup: BTreeMap::new(),
         };
         println!("{schema:#?}");
         assert_eq!(schema, expected);
     }
 
-    #[test]
-    fn test_parse_record_alias_and_namespace() {
-        let sample = r#"@namespace("org.apache.avro.someOtherNamespace")
+    #[rstest]
+    #[case(
+        r#"@namespace("org.apache.avro.someOtherNamespace")
+    @aliases(["org.old.OldRecord", "org.ancient.AncientRecord"])
+    record Employee {
+        string name;
+    }"#
+    )]
+    #[case(
+        r#"
         @aliases(["org.old.OldRecord", "org.ancient.AncientRecord"])
-        record Employee {
-            string name;
-        }"#;
-        let (_tail, schema) = parse_record(sample).unwrap();
+        @namespace("org.apache.avro.someOtherNamespace")
+    record Employee {
+        string name;
+    }"#
+    )]
+    fn test_parse_record_alias_and_namespace(#[case] input: &str) {
+        let (_tail, schema) = parse_record(input).unwrap();
+
         let expected = Schema::Record {
             name: Name {
                 name: "Employee".into(),
                 namespace: Some("org.apache.avro.someOtherNamespace".into()),
             },
-            aliases: Some(
-                vec![
-                    Alias::new("org.old.OldRecord".into()).unwrap(),
-                    Alias::new("org.ancient.AncientRecord".into()).unwrap(),
-                ],
-            ),
+            aliases: Some(vec![
+                Alias::new("org.old.OldRecord".into()).unwrap(),
+                Alias::new("org.ancient.AncientRecord".into()).unwrap(),
+            ]),
             doc: None,
-            fields: vec![
-                RecordField {
-                    name: "name".into(),
-                    doc: None,
-                    default: None,
-                    schema: Schema::String,
-                    order: RecordFieldOrder::Ascending,
-                    position: 0,
-                },
-            ],
+            fields: vec![RecordField {
+                name: "name".into(),
+                doc: None,
+                default: None,
+                schema: Schema::String,
+                order: RecordFieldOrder::Ascending,
+                position: 0,
+            }],
             lookup: BTreeMap::new(),
         };
-        println!("{schema:#?}");
         assert_eq!(schema, expected);
+    }
+    #[rstest]
+    #[case(r#"protocol MyProtocol {
+        record Hello {
+            string name;
+        }
+    }"#)]
+    fn test_parse_protocol(#[case]input: &str) {
+        let r = parse_protocol(input).unwrap();
+        println!("{r:#?}");
     }
 }

@@ -1,4 +1,7 @@
 protocol MyProtocol {
+    /**
+     * dfsdf
+     */
     @aliases( ["org.old.OldRecord", "org.ancient.AncientRecord" ] )
     @namespace
     (
