@@ -17,10 +17,19 @@ use nom::{
 };
 use serde_json::{Number, Value};
 
+// Samples:
+// ```
+// COIN
+// NUMBER
+// ```
 fn parse_enum_item(input: &str) -> IResult<&str, &str> {
     delimited(multispace0, alphanumeric1, multispace0)(input)
 }
 
+// Sample:
+// ```
+// { COIN, NUMBER }
+// ```
 pub fn parse_enum_symbols(input: &str) -> IResult<&str, Vec<&str>> {
     delimited(
         multispace0,
@@ -34,8 +43,11 @@ pub fn parse_enum_symbols(input: &str) -> IResult<&str, Vec<&str>> {
 }
 
 // TODO: Review this
+// ```
+// enum Items
+// ```
 fn parse_enum_name(input: &str) -> IResult<&str, &str> {
-    space_delimited(preceded(tag("enum "), alphanumeric1))(input)
+    space_delimited(preceded(space_delimited(tag("enum")), alphanumeric1))(input)
 }
 
 fn space_delimited<Input, Output, Error>(
@@ -113,7 +125,10 @@ pub fn parse_order(input: &str) -> IResult<&str, RecordFieldOrder> {
         ),
     )(input)
 }
-
+// Sample:
+// ```
+// = COIN;
+// ```
 fn parse_enum_default(input: &str) -> IResult<&str, &str> {
     terminated(
         preceded(space_delimited(tag("=")), parse_enum_item),
@@ -121,6 +136,10 @@ fn parse_enum_default(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
+// Sample:
+// ```
+// enum Items { COIN, NUMBER } = COIN;
+// ```
 pub fn parse_enum(input: &str) -> IResult<&str, Schema> {
     let (tail, (aliases, name, body, _default)) = tuple((
         opt(parse_aliases),
@@ -160,6 +179,10 @@ pub fn parse_string_default(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
+// Sample:
+// ```
+// string name = "jon";
+// ```
 pub fn parse_string(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, Option<&str>)> {
     preceded(
         tag("string"),
@@ -184,6 +207,10 @@ pub fn parse_boolean_default(input: &str) -> IResult<&str, bool> {
     )(input)
 }
 
+// Sample:
+// ```
+// boolean active = true;
+// ```
 pub fn parse_boolean(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, Option<bool>)> {
     preceded(
         tag("boolean"),
@@ -198,6 +225,10 @@ pub fn parse_boolean(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &s
     )(input)
 }
 
+// Sample:
+// ```
+// = 20;
+// ```
 pub fn parse_int_default(input: &str) -> IResult<&str, i32> {
     let parse_int = map_res(digit1, |v: &str| v.parse::<i32>());
     context(
@@ -206,6 +237,10 @@ pub fn parse_int_default(input: &str) -> IResult<&str, i32> {
     )(input)
 }
 
+// Sample:
+// ```
+// int age = 20;
+// ```
 pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, Option<i32>)> {
     preceded(
         tag("int"),
@@ -220,6 +255,10 @@ pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, 
     )(input)
 }
 
+// Sample:
+// ```
+// = 20;
+// ```
 pub fn parse_long_default(input: &str) -> IResult<&str, i64> {
     let parse_long = map_res(digit1, |v: &str| v.parse::<i64>());
     context(
@@ -228,6 +267,10 @@ pub fn parse_long_default(input: &str) -> IResult<&str, i64> {
     )(input)
 }
 
+// Sample:
+// ```
+// long age = 20;
+// ```
 pub fn parse_long(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, Option<i64>)> {
     preceded(
         tag("long"),
@@ -242,6 +285,10 @@ pub fn parse_long(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str,
     )(input)
 }
 
+// Sample:
+// ```
+// = 20.0;
+// ```
 pub fn parse_float_default(input: &str) -> IResult<&str, f32> {
     let parse_float = map_res(
         take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
@@ -253,6 +300,10 @@ pub fn parse_float_default(input: &str) -> IResult<&str, f32> {
     )(input)
 }
 
+// Sample:
+// ```
+// float age = 20;
+// ```
 pub fn parse_float(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, Option<f32>)> {
     preceded(
         tag("float"),
@@ -267,6 +318,10 @@ pub fn parse_float(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str
     )(input)
 }
 
+// Sample:
+// ```
+// = 20.0;
+// ```
 pub fn parse_double_default(input: &str) -> IResult<&str, f64> {
     let parse_double = map_res(
         take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
@@ -278,6 +333,10 @@ pub fn parse_double_default(input: &str) -> IResult<&str, f64> {
     )(input)
 }
 
+// Sample:
+// ```
+// double age = 20.0;
+// ```
 pub fn parse_double(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &str, Option<f64>)> {
     preceded(
         tag("double"),
@@ -292,20 +351,35 @@ pub fn parse_double(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, &st
     )(input)
 }
 
+// Sample
+// ```
+// array<long> arrayOfLongs;
+// ```
 pub fn parse_array(input: &str) -> IResult<&str, (&str, Option<f64>)> {
     todo!("I think we are gonna have to change to an enum. It should return one of the enum")
 }
 
+// Sample
+// ```
+// /** This is a doc */
+// ```
 pub fn parse_doc(input: &str) -> IResult<&str, &str> {
     delimited(tag("/**"), take_until("*/"), tag("*/"))(input)
 }
 
+// Sample
+// ```
+// record TestRecord
+// ```
 fn parse_record_name(input: &str) -> IResult<&str, &str> {
     preceded(tag("record"), space_delimited(alphanumeric1))(input)
 }
 
+// Sample
+// ```
+// string @order("ignore") name = "jon";
+// ```
 fn parse_field(input: &str) -> IResult<&str, RecordField> {
-    // let (tail, (rstring, rbool, rint, rlong, rfloat, rdouble)) = alt((
     preceded(
         multispace0,
         alt((
@@ -412,6 +486,15 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
     ))
 }
 
+// Sample:
+// ```
+// protocol Simple {
+//    record Simple {
+//      string name;
+//      int age;
+//    }
+// }
+// ```
 pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
     let (tail, (_name, schema)) = tuple((
         preceded(
@@ -571,6 +654,7 @@ mod test {
     #[case("double stock = 0.0;", (None, "stock", Some(0.0)))]
     #[case("double stock = .0;", (None, "stock", Some(0.0)))]
     #[case("double stock = 0;", (None, "stock", Some(0.0)))]
+    #[case(r#"double @order("descending") stock = 0;"#, (Some(RecordFieldOrder::Descending), "stock", Some(0.0)))]
     #[case("double   stock   =   123.3 ;", (None, "stock", Some(123.3)))]
     fn test_parse_double_ok(
         #[case] input: &str,
