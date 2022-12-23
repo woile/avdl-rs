@@ -1,0 +1,5 @@
+protocol MyProtocol {
+    record Hello {
+        string name;
+    }
+}

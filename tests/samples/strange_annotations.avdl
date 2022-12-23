@@ -1,0 +1,9 @@
+protocol MyProtocol {
+    @aliases( ["org.old.OldRecord", "org.ancient.AncientRecord" ] )
+    @namespace
+    (
+        "org.apache.avro.firstNamespace"  )
+    record Hello {
+        string name;
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "avdl-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nom = "7.1.1"
+apache-avro = "0.14.0"
+serde_json = { default-features = false, version = "1.0.91", features = ["std"] }
+
+[dev-dependencies]
+rstest = "0.16.0" # Todo: move to dev-dependencies
+
+[lib]
+path = "src/lib.rs"
