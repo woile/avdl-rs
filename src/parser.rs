@@ -1004,6 +1004,12 @@ mod test {
     #[case(
         r#"union { null, string } item = null;"#, ((vec![Schema::Null, Schema::String], None, None,"item"), Some(Value::Null))
     )]
+    #[case(
+        r#"union { int, string } item = 1;"#, ((vec![Schema::Int, Schema::String], None, None,"item"), Some(Value::Number(1.into())))
+    )]
+    #[case(
+        r#"union { string, int } item = "1";"#, ((vec![Schema::String, Schema::Int], None, None,"item"), Some(Value::String("1".to_string())))
+    )]
     fn test_union(
         #[case] input: &str,
         #[case] expected: (
