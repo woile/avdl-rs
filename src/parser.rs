@@ -453,11 +453,12 @@ pub fn parse_union(
             separated_list1(
                 space_delimited(tag(",")),
                 map(alphanumeric1, |value_type| match value_type {
-                    "string" => Schema::String,
                     "null" => Schema::Null,
+                    "boolean" => Schema::Boolean,
+                    "string" => Schema::String,
+                    "int" => Schema::Int,
                     "double" => Schema::Double,
                     "float" => Schema::Float,
-                    "int" => Schema::Int,
                     "long" => Schema::Long,
                     // TODO: Add bytes
                     // TOOD: return nom Error instead of panic
@@ -494,6 +495,7 @@ pub fn parse_union(
     //     })),
     // ))(input)
 }
+
 // Sample
 // ```
 // /** This is a doc */
