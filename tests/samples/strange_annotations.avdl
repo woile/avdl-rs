@@ -10,5 +10,9 @@ protocol MyProtocol {
         @java-class("java.util.ArrayList") string  @order(
             "descending"
             ) name;
+
+        union { null, string } @order("ignore") @aliases(["pk"]) item_id = null;
+        // union { null, string } @aliases(["monthx"]) @order("ignore")  month = null;
+        union { null, string } @aliases(["monthx"]) @order("ignore") month = null;
     }
 }

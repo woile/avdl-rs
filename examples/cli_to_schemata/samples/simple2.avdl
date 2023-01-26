@@ -1,0 +1,5 @@
+protocol MyProtocol {
+    record MyUnion {
+        union {string, int} item = "a";
+    }
+}

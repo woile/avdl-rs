@@ -24,7 +24,7 @@ fn main() {
     for schema in schemas {
         match &schema {
 
-            Schema::Record { name, aliases, doc, fields, lookup } => {
+            Schema::Record { name, aliases, doc, fields, lookup, attributes } => {
                 let filename = format!("{name}.avsc");
                 let outpath = Path::new(output_dir).join(filename);
                 // let contents = schema.canonical_form();

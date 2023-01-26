@@ -1,9 +1,0 @@
-protocol MyProtocol {
-    record Hello {
-        string name;
-    }
-    record Person {
-        string name;
-        int age;
-    }
-}

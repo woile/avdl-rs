@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 nom = "7.1.1"
-apache-avro = "0.14.0"
+apache-avro = { git = "https://github.com/apache/avro.git", branch = "master", features=["derive"] }
 serde_json = { default-features = false, version = "1.0.91", features = ["std"] }
 
 [dev-dependencies]

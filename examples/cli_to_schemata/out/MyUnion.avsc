@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "MyUnion",
+  "fields": [
+    {
+      "name": "item",
+      "type": [
+        "string",
+        "int"
+      ],
+      "default": "a"
+    }
+  ]
+}

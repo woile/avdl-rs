@@ -11,6 +11,7 @@
 - [ ] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
 - [ ] [Records and errors](https://avro.apache.org/docs/1.11.1/idl-language/#defining-records-and-errors)
     - [x] Record
+    - [x] RecordField
     - [ ] Error
 - [ ] [Protocol](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-protocol-in-avro-idl)
 - [Primitive types](https://avro.apache.org/docs/1.11.1/idl-language/#primitive-types)
@@ -30,7 +31,7 @@
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
     - [ ] Arrays
     - [ ] Maps
-    - [ ] Unions
+    - [x] Unions
 - [Default values](https://avro.apache.org/docs/1.11.1/idl-language/#default-values)
     - [x] Enum
 - [Comments](https://avro.apache.org/docs/1.11.1/idl-language/#comments)
