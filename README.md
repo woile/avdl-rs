@@ -21,7 +21,7 @@
     - [x] long = i64
     - [x] float = f32
     - [x] double = f64
-    - [ ] null = ?
+    - [x] null = ?
     - [ ] bytes = [u8]
 - [Logical types](https://avro.apache.org/docs/1.11.1/idl-language/#logical-types)
     - [ ] decimal (logical type decimal)

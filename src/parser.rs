@@ -1,24 +1,23 @@
 use std::collections::BTreeMap;
 
 use apache_avro::schema::{
-    Alias, Aliases, Name, Namespace, RecordField, RecordFieldOrder, Schema, SchemaKind, UnionSchema,
+    Alias, Name, RecordField, RecordFieldOrder, Schema, SchemaKind, UnionSchema,
 };
-use apache_avro::types;
 
-use nom::combinator::{map_opt, peek};
+use nom::combinator::{map_opt, verify};
+
 use nom::{
     branch::{alt, permutation},
-    bytes::complete::{escaped, is_a, tag, take_until, take_while, take_while1},
+    bytes::complete::{escaped, tag, take_until, take_while, take_while1},
     character::{
-        complete::{alphanumeric0, alphanumeric1, anychar, char, digit1, line_ending, multispace0},
-        is_alphanumeric,
+        complete::{alphanumeric1, char, digit1, line_ending, multispace0},
         streaming::one_of,
     },
-    combinator::{cut, map, map_res, opt, recognize, value},
+    combinator::{cut, map, map_res, opt, value},
     error::context,
-    multi::{self, many0, many1, separated_list1},
+    multi::{many1, separated_list1},
     sequence::{delimited, preceded, terminated, tuple},
-    AsChar, IResult, InputIter, InputTake, InputTakeAtPosition, Parser,
+    AsChar, IResult, InputTake, InputTakeAtPosition, Parser,
 };
 use serde_json::{Number, Value};
 
@@ -32,7 +31,7 @@ type EnumSymbol<'a> = &'a str;
 // NUMBER
 // ```
 fn parse_enum_item(input: &str) -> IResult<&str, VarName> {
-    delimited(multispace0, alphanumeric1, multispace0)(input)
+    delimited(multispace0, parse_var_name, multispace0)(input)
 }
 
 // Sample:
@@ -56,7 +55,7 @@ pub fn parse_enum_symbols(input: &str) -> IResult<&str, Vec<EnumSymbol>> {
 // enum Items
 // ```
 fn parse_enum_name(input: &str) -> IResult<&str, VarName> {
-    space_delimited(preceded(space_delimited(tag("enum")), alphanumeric1))(input)
+    space_delimited(preceded(space_delimited(tag("enum")), parse_var_name))(input)
 }
 
 fn space_delimited<Input, Output, Error>(
@@ -97,6 +96,18 @@ fn parse_namespace_value(input: &str) -> IResult<&str, String> {
     map(delimited(char('"'), ns, char('"')), |s: &str| {
         String::from(s)
     })(input)
+}
+
+// The name portion of the fullname of named types, record field names, and enum symbols must:
+//
+// - start with [A-Za-z_]
+// - subsequently contain only [A-Za-z0-9_]
+// https://avro.apache.org/docs/1.11.1/specification/#names
+fn parse_var_name(input: &str) -> IResult<&str, &str> {
+    verify(
+        take_while(|c| char::is_alphanumeric(c) || c == '_'),
+        |s: &str| s.chars().take(1).any(|c| char::is_alpha(c) || c == '_'),
+    )(input)
 }
 
 // Example:
@@ -179,10 +190,18 @@ fn parse_str<'a, E: nom::error::ParseError<&'a str>>(i: &'a str) -> IResult<&'a 
     escaped(alphanumeric1, '\\', one_of("\"n\\"))(i)
 }
 
+// Sample
+// ```
+// "pepe"
+// ```
 pub fn map_string(input: &str) -> IResult<&str, &str> {
     preceded(char('"'), cut(terminated(parse_str, char('"'))))(input)
 }
 
+// Sample
+// ```
+// = "pepe"
+// ```
 pub fn parse_string_default(input: &str) -> IResult<&str, &str> {
     context(
         "string default",
@@ -211,7 +230,39 @@ pub fn parse_string(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
                 opt(space_delimited(parse_aliases)),
-                alphanumeric1,
+                parse_var_name,
+                opt(parse_string_default),
+            ))),
+            char(';'),
+        )),
+    )(input)
+}
+
+// Sample:
+// ```
+// bytes name = "jon";
+// ```
+// For the default the only reference I found is:
+//      https://docs.oracle.com/cd/E26161_02/html/GettingStartedGuide/avroschemas.html
+// It reads: Default values for bytes and fixed fields are JSON strings.
+pub fn parse_bytes(
+    input: &str,
+) -> IResult<
+    &str,
+    (
+        Option<RecordFieldOrder>,
+        Option<Vec<Alias>>,
+        VarName,
+        Option<&str>,
+    ),
+> {
+    preceded(
+        tag("bytes"),
+        cut(terminated(
+            space_delimited(tuple((
+                opt(space_delimited(parse_order)),
+                opt(space_delimited(parse_aliases)),
+                parse_var_name,
                 opt(parse_string_default),
             ))),
             char(';'),
@@ -252,7 +303,7 @@ pub fn parse_boolean(
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
-                alphanumeric1,
+                parse_var_name,
                 opt(parse_boolean_default),
             ))),
             char(';'),
@@ -286,7 +337,7 @@ pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarNam
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
-                alphanumeric1,
+                parse_var_name,
                 opt(parse_int_default),
             ))),
             char(';'),
@@ -323,7 +374,7 @@ pub fn parse_long(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarNa
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
-                alphanumeric1,
+                parse_var_name,
                 opt(parse_long_default),
             ))),
             char(';'),
@@ -363,7 +414,7 @@ pub fn parse_float(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarN
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
-                alphanumeric1,
+                parse_var_name,
                 opt(parse_float_default),
             ))),
             char(';'),
@@ -405,7 +456,7 @@ pub fn parse_double(
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
-                alphanumeric1,
+                parse_var_name,
                 opt(parse_double_default),
             ))),
             char(';'),
@@ -460,7 +511,7 @@ pub fn parse_union(
                     "double" => Schema::Double,
                     "float" => Schema::Float,
                     "long" => Schema::Long,
-                    // TODO: Add bytes
+                    "bytes" => Schema::Bytes,
                     // TOOD: return nom Error instead of panic
                     _ => panic!("Something went wrong {value_type}"),
                 }),
@@ -472,7 +523,7 @@ pub fn parse_union(
         parse_union_types,
         opt(parse_order),
         opt(parse_aliases),
-        alphanumeric1,
+        parse_var_name,
     ))(input)?;
     let first_schema =
         x.0.first()
@@ -485,15 +536,6 @@ pub fn parse_union(
         char(';'),
     )(tail)?;
     Ok((tail, (x, y)))
-    // tuple((
-    //     parse_union_types,
-    //     opt(parse_order),
-    //     parse_aliases,
-    //     alphanumeric1,
-    //     opt(map_opt(parse_union_default, |v| {
-    //         Some(map_schema_to_value(first_schema_kind.clone(), v))
-    //     })),
-    // ))(input)
 }
 
 // Sample
@@ -535,7 +577,12 @@ fn map_schema_to_value(schema: SchemaKind, value: &str) -> Value {
             let (_, v) = map_double(value).unwrap();
             Value::Number(Number::from_f64(v).expect("Could not handle f64"))
         }
-        SchemaKind::Bytes => todo!(),
+        SchemaKind::Bytes => {
+            let (_, pstr) = map_string(value).expect("invalid string");
+            let v: Vec<u8> = Vec::from(pstr);
+
+            Value::Array(v.into_iter().map(|b| b.into()).collect())
+        }
         SchemaKind::String => {
             let (_, pstr) = map_string(value).expect("invalid string");
             Value::String(pstr.to_string())
@@ -706,10 +753,10 @@ mod test {
     use std::collections::BTreeMap;
 
     use super::{
-        parse_aliases, parse_boolean, parse_doc, parse_double, parse_enum, parse_enum_default,
-        parse_enum_item, parse_enum_symbols, parse_field, parse_float, parse_int, parse_long,
-        parse_namespace, parse_namespace_value, parse_order, parse_protocol, parse_record,
-        parse_record_name, parse_string, parse_union, VarName,
+        parse_aliases, parse_boolean, parse_bytes, parse_doc, parse_double, parse_enum,
+        parse_enum_default, parse_enum_item, parse_enum_symbols, parse_field, parse_float,
+        parse_int, parse_long, parse_namespace, parse_namespace_value, parse_order, parse_protocol,
+        parse_record, parse_record_name, parse_string, parse_union, parse_var_name, VarName,
     };
     use apache_avro::schema::{Alias, Name, RecordField, RecordFieldOrder, Schema};
     use rstest::rstest;
@@ -744,6 +791,51 @@ mod test {
         for input in invalid_strings {
             assert!(parse_string(input).is_err());
         }
+    }
+
+    #[rstest]
+    #[case("my_name", "my_name", "")]
+    #[case("myname", "myname", "")]
+    #[case("numbers3", "numbers3", "")]
+    #[case("numbers3_", "numbers3_", "")]
+    #[case("n20umbers3", "n20umbers3", "")]
+    #[case("_n20umbers3", "_n20umbers3", "")]
+    #[case("_n20umbers3_", "_n20umbers3_", "")]
+    fn test_varname(#[case] input: &str, #[case] expected: &str, #[case] tail: &str) {
+        assert_eq!(parse_var_name(input), Ok((tail, expected)))
+    }
+
+    #[test]
+    fn test_parse_var_name_fail() {
+        let invalid_var_name = [
+            "1var_name",
+            "-1var_name",
+            "$0_1var_name",
+            "1_n20umbers3",
+            "1_n20umbers3_",
+        ];
+        for input in invalid_var_name {
+            assert!(parse_var_name(input).is_err());
+        }
+    }
+
+    #[rstest]
+    #[case("bytes message;", (None, None, "message",None))]
+    #[case("bytes  message;", (None, None, "message",None))]
+    #[case("bytes message ;", (None, None, "message",None))]
+    #[case(r#"bytes message = "holis" ;"#, (None, None, "message",Some("holis")))]
+    #[case(r#"bytes message = "holis";"#, (None, None, "message",Some("holis")))]
+    #[case(r#"bytes @order("ignore") message = "holis";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some("holis")))]
+    fn test_parse_bytes_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Option<RecordFieldOrder>,
+            Option<Vec<Alias>>,
+            &str,
+            Option<&str>,
+        ),
+    ) {
+        assert_eq!(parse_bytes(input), Ok(("", expected)));
     }
 
     #[rstest]
