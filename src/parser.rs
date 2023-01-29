@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use apache_avro::schema::{
-    Alias, Name, RecordField, RecordFieldOrder, Schema, SchemaKind, UnionSchema,
+    Alias, Name, RecordFieldOrder,
 };
+
 
 use nom::combinator::{map_opt, verify};
 
@@ -20,6 +21,8 @@ use nom::{
     AsChar, IResult, InputTake, InputTakeAtPosition, Parser,
 };
 use serde_json::{Number, Value};
+
+use crate::schema::{Schema, SchemaKind, RecordField, UnionSchema};
 
 // Alias to give more clarity on what is being returned
 type VarName<'a> = &'a str;
@@ -599,23 +602,26 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
     preceded(
         multispace0,
         alt((
-            map(parse_string, |(order, aliases, name, default)| {
-                RecordField {
+            map(
+                tuple((opt(space_delimited(parse_doc)), parse_string)),
+                |(doc, (order, aliases, name, default))| RecordField {
                     name: name.to_string(),
-                    doc: None,
+                    doc: doc.map(String::from),
                     default: default.map(|v| Value::String(v.to_string())),
                     schema: Schema::String,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
                     position: 0,
                     custom_attributes: BTreeMap::new(),
-                }
-            }),
+                },
+            ),
             map(parse_boolean, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
                 default: default.map(|v| Value::Bool(v)),
                 schema: Schema::Boolean,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
@@ -625,6 +631,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 default: default.map(|v| Value::Number(v.into())),
                 schema: Schema::Int,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
@@ -634,6 +641,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 default: default.map(|v| Value::Number(v.into())),
                 schema: Schema::Long,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
@@ -645,6 +653,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 }),
                 schema: Schema::Float,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
@@ -655,6 +664,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                     .map(|v| Value::Number(Number::from_f64(v).expect("Could not handle f64"))),
                 schema: Schema::Double,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
@@ -667,6 +677,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                         UnionSchema::new(schemas).expect("Failed to create union schema"),
                     ),
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
                     position: 0,
                     custom_attributes: BTreeMap::new(),
                 }
@@ -758,7 +769,8 @@ mod test {
         parse_int, parse_long, parse_namespace, parse_namespace_value, parse_order, parse_protocol,
         parse_record, parse_record_name, parse_string, parse_union, parse_var_name, VarName,
     };
-    use apache_avro::schema::{Alias, Name, RecordField, RecordFieldOrder, Schema};
+    use crate::schema::{RecordField, Schema};
+    use apache_avro::schema::{Alias, Name, RecordFieldOrder, Schema as SourceSchema};
     use rstest::rstest;
     use serde_json::{Number, Value};
 
@@ -840,7 +852,7 @@ mod test {
 
     #[rstest]
     #[case("boolean active;", (None, "active", None))]
-    #[case(r#"boolean @order("ignore") active;"#, (None, "active", None))]
+    #[case(r#"boolean @order("ignore") active;"#, (Some(RecordFieldOrder::Ignore), "active", None))]
     #[case("boolean active = true;", (None, "active", Some(true)))]
     #[case("boolean active = false;", (None, "active", Some(false)))]
     #[case("boolean   active   =   false ;", (None, "active", Some(false)))]
@@ -924,7 +936,7 @@ mod test {
             "float age",                  // missing semi-colon
             r#"float age = "false""#,     // wrong type
             r#"float age = 123"#,         // missing semi-colon with default
-            "float age = 3.50282347e39;", // longer than i32
+            "float age = 3.50282347e40;", // longer than f32
         ];
 
         for input in invalid_floats {
@@ -1163,21 +1175,21 @@ mod test {
     }
 
     #[rstest]
-    #[case("string Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::String, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case(r#"string nickname = "Woile";"#, RecordField{ name: String::from("nickname"), doc: None, default: Some(Value::String("Woile".to_string())), schema: Schema::String, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("boolean Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Boolean, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("boolean Hello = true;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Bool(true)), schema: Schema::Boolean, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("int Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Int, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("int Hello = 1;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(1.into())), schema: Schema::Int, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("long Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Long, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("long Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(123.into())), schema: Schema::Long, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("float Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Float, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("float Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Float, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("float Hello = 123.0;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Float, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("double Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case(r#"double @order("ignore") Hello;"#, RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ignore, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("double Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
-    #[case("double Hello = 123.0;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("string Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::String, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case(r#"string nickname = "Woile";"#, RecordField{ name: String::from("nickname"), doc: None, default: Some(Value::String("Woile".to_string())), schema: Schema::String, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("boolean Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Boolean, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("boolean Hello = true;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Bool(true)), schema: Schema::Boolean, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("int Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Int, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("int Hello = 1;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(1.into())), schema: Schema::Int, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("long Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Long, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("long Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(123.into())), schema: Schema::Long, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("float Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Float, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("float Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Float, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("float Hello = 123.0;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Float, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("double Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case(r#"double @order("ignore") Hello;"#, RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ignore, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("double Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
+    #[case("double Hello = 123.0;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
     fn test_parse_field(#[case] input: &str, #[case] expected: RecordField) {
         assert_eq!(parse_field(input), Ok(("", expected)))
     }
@@ -1190,6 +1202,7 @@ mod test {
             long salary;
         }"#;
         let (_tail, schema) = parse_record(sample).unwrap();
+        let schema: SourceSchema = schema.into();
         let canonical_form = schema.canonical_form();
         let expected = r#"{"name":"Employee","type":"record","fields":[{"name":"name","type":"string"},{"name":"active","type":"boolean"},{"name":"salary","type":"long"}]}"#;
         assert_eq!(canonical_form, expected)
@@ -1218,6 +1231,7 @@ mod test {
                 default: None,
                 schema: Schema::String,
                 order: RecordFieldOrder::Ascending,
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }],
@@ -1263,6 +1277,7 @@ mod test {
                 default: None,
                 schema: Schema::String,
                 order: RecordFieldOrder::Ascending,
+                aliases: None,
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }],
@@ -1282,5 +1297,66 @@ mod test {
     fn test_parse_protocol(#[case] input: &str) {
         let r = parse_protocol(input).unwrap();
         println!("{r:#?}");
+    }
+
+    #[test]
+    fn test_parse_big_record() {
+        let input_schema = r#"@namespace("org.apache.avro.someOtherNamespace")
+        @aliases(["org.old.OldRecord", "org.ancient.AncientRecord"])
+        record Employee {
+            /** person fullname */
+            string name;
+            string @aliases(["item"]) item_id = "ABC123";
+            int age;
+        }"#;
+        let (_tail, schema) = parse_record(input_schema).unwrap();
+        let out = serde_json::to_string_pretty(&schema).unwrap();
+        println!("{out}");
+        let expected = Schema::Record {
+            name: Name {
+                name: "Employee".into(),
+                namespace: Some("org.apache.avro.someOtherNamespace".into()),
+            },
+            aliases: Some(vec![
+                Alias::new("org.old.OldRecord".into()).unwrap(),
+                Alias::new("org.ancient.AncientRecord".into()).unwrap(),
+            ]),
+            doc: None,
+            fields: vec![
+                RecordField {
+                    name: "name".into(),
+                    doc: Some(String::from("person fullname")),
+                    default: None,
+                    schema: Schema::String,
+                    order: RecordFieldOrder::Ascending,
+                    aliases: None,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+                RecordField {
+                    name: "item_id".into(),
+                    doc: None,
+                    default: Some(Value::String(String::from("ABC123"))),
+                    schema: Schema::String,
+                    order: RecordFieldOrder::Ascending,
+                    aliases: None,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+                RecordField {
+                    name: "age".into(),
+                    doc: None,
+                    default: None,
+                    schema: Schema::Int,
+                    order: RecordFieldOrder::Ascending,
+                    aliases: None,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+            ],
+            lookup: BTreeMap::new(),
+            attributes: BTreeMap::new(),
+        };
+        assert_eq!(schema, expected);
     }
 }

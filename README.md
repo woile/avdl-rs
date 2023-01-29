@@ -2,6 +2,11 @@
 
 > Parse Avro AVDL files
 
+## Notes
+
+- `apache_avro::Schema` cannot be used to generate the avsc because `RecordField` is missing things like `aliases`. We have a reimplementation internally with some extras. I try to keep it as close as possible
+to the original, in case we can use it in the future.
+
 ## Parsers
 
 - [x] [Enums](https://avro.apache.org/docs/1.11.1/idl-language/#defining-an-enumeration)
@@ -22,7 +27,7 @@
     - [x] float = f32
     - [x] double = f64
     - [x] null = ?
-    - [ ] bytes = [u8]
+    - [x] bytes = [u8]
 - [Logical types](https://avro.apache.org/docs/1.11.1/idl-language/#logical-types)
     - [ ] decimal (logical type decimal)
     - [ ] date (logical type date)
