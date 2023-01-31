@@ -1,17 +1,15 @@
 use std::collections::BTreeMap;
 
-use apache_avro::schema::{
-    Alias, Name, RecordFieldOrder,
-};
-
+use apache_avro::schema::{Alias, Name, RecordFieldOrder};
 
 use nom::combinator::{map_opt, verify};
 
+use nom::multi::separated_list0;
 use nom::{
     branch::{alt, permutation},
     bytes::complete::{escaped, tag, take_until, take_while, take_while1},
     character::{
-        complete::{alphanumeric1, char, digit1, line_ending, multispace0},
+        complete::{alphanumeric0, alphanumeric1, char, digit1, line_ending, multispace0},
         streaming::one_of,
     },
     combinator::{cut, map, map_res, opt, value},
@@ -22,7 +20,7 @@ use nom::{
 };
 use serde_json::{Number, Value};
 
-use crate::schema::{Schema, SchemaKind, RecordField, UnionSchema};
+use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
 
 // Alias to give more clarity on what is being returned
 type VarName<'a> = &'a str;
@@ -190,26 +188,26 @@ pub fn parse_enum(input: &str) -> IResult<&str, Schema> {
 }
 
 fn parse_str<'a, E: nom::error::ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
-    escaped(alphanumeric1, '\\', one_of("\"n\\"))(i)
+    escaped(alphanumeric0, '\\', one_of("\"n\\"))(i)
 }
 
 // Sample
 // ```
 // "pepe"
 // ```
-pub fn map_string(input: &str) -> IResult<&str, &str> {
+pub fn parse_string_value(input: &str) -> IResult<&str, &str> {
     preceded(char('"'), cut(terminated(parse_str, char('"'))))(input)
 }
 
-// Sample
-// ```
-// = "pepe"
-// ```
-pub fn parse_string_default(input: &str) -> IResult<&str, &str> {
-    context(
-        "string default",
-        preceded(space_delimited(tag("=")), map_string),
-    )(input)
+pub fn map_string(input: &str) -> IResult<&str, Value> {
+    map(parse_string_value, |v| Value::String(v.into()))(input)
+}
+
+pub fn map_bytes(input: &str) -> IResult<&str, Value> {
+    map(parse_string_value, |v| {
+        let v: Vec<u8> = Vec::from(v);
+        Value::Array(v.into_iter().map(|b| b.into()).collect())
+    })(input)
 }
 
 // Sample:
@@ -224,7 +222,7 @@ pub fn parse_string(
         Option<RecordFieldOrder>,
         Option<Vec<Alias>>,
         VarName,
-        Option<&str>,
+        Option<Value>,
     ),
 > {
     preceded(
@@ -234,7 +232,10 @@ pub fn parse_string(
                 opt(space_delimited(parse_order)),
                 opt(space_delimited(parse_aliases)),
                 parse_var_name,
-                opt(parse_string_default),
+                opt(context(
+                    "string default",
+                    preceded(space_delimited(tag("=")), map_string),
+                )),
             ))),
             char(';'),
         )),
@@ -256,7 +257,7 @@ pub fn parse_bytes(
         Option<RecordFieldOrder>,
         Option<Vec<Alias>>,
         VarName,
-        Option<&str>,
+        Option<Value>,
     ),
 > {
     preceded(
@@ -266,32 +267,32 @@ pub fn parse_bytes(
                 opt(space_delimited(parse_order)),
                 opt(space_delimited(parse_aliases)),
                 parse_var_name,
-                opt(parse_string_default),
+                opt(context(
+                    "string default",
+                    preceded(space_delimited(tag("=")), map_bytes),
+                )),
             ))),
             char(';'),
         )),
     )(input)
 }
 
-// Sample:
+// Sample
 // ```
-// true
+// null
 // ```
-pub fn map_bool(input: &str) -> IResult<&str, bool> {
-    let parse_true = value(true, tag("true"));
-    let parse_false = value(false, tag("false"));
-    alt((parse_true, parse_false))(input)
+pub fn map_null(input: &str) -> IResult<&str, Value> {
+    value(Value::Null, tag("null"))(input)
 }
 
 // Sample:
 // ```
-// = true
+// true
 // ```
-pub fn parse_boolean_default(input: &str) -> IResult<&str, bool> {
-    context(
-        "boolean default",
-        preceded(space_delimited(tag("=")), map_bool),
-    )(input)
+pub fn map_bool(input: &str) -> IResult<&str, Value> {
+    let parse_true = value(true, tag("true"));
+    let parse_false = value(false, tag("false"));
+    map(alt((parse_true, parse_false)), |v| Value::Bool(v))(input)
 }
 
 // Sample:
@@ -300,14 +301,17 @@ pub fn parse_boolean_default(input: &str) -> IResult<&str, bool> {
 // ```
 pub fn parse_boolean(
     input: &str,
-) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<bool>)> {
+) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<Value>)> {
     preceded(
         tag("boolean"),
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
                 parse_var_name,
-                opt(parse_boolean_default),
+                opt(context(
+                    "boolean default",
+                    preceded(space_delimited(tag("=")), map_bool),
+                )),
             ))),
             char(';'),
         )),
@@ -318,30 +322,27 @@ pub fn parse_boolean(
 // ```
 // 20
 // ```
-pub fn map_int(input: &str) -> IResult<&str, i32> {
-    map_res(digit1, |v: &str| v.parse::<i32>())(input)
-}
-
-// Sample:
-// ```
-// = 20
-// ```
-pub fn parse_int_default(input: &str) -> IResult<&str, i32> {
-    context("int default", preceded(space_delimited(tag("=")), map_int))(input)
+pub fn map_int(input: &str) -> IResult<&str, Value> {
+    map(map_res(digit1, |v: &str| v.parse::<i32>()), |v| {
+        Value::Number(v.into())
+    })(input)
 }
 
 // Sample:
 // ```
 // int age = 20;
 // ```
-pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<i32>)> {
+pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<Value>)> {
     preceded(
         tag("int"),
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
                 parse_var_name,
-                opt(parse_int_default),
+                opt(context(
+                    "int default",
+                    preceded(space_delimited(tag("=")), map_int),
+                )),
             ))),
             char(';'),
         )),
@@ -352,33 +353,29 @@ pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarNam
 // ```
 // 20
 // ```
-pub fn map_long(input: &str) -> IResult<&str, i64> {
-    map_res(digit1, |v: &str| v.parse::<i64>())(input)
-}
-
-// Sample:
-// ```
-// = 20
-// ```
-pub fn parse_long_default(input: &str) -> IResult<&str, i64> {
-    context(
-        "long default",
-        preceded(space_delimited(tag("=")), map_long),
-    )(input)
+pub fn map_long(input: &str) -> IResult<&str, Value> {
+    map(map_res(digit1, |v: &str| v.parse::<i64>()), |v| {
+        Value::Number(v.into())
+    })(input)
 }
 
 // Sample:
 // ```
 // long age = 20;
 // ```
-pub fn parse_long(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<i64>)> {
+pub fn parse_long(
+    input: &str,
+) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<Value>)> {
     preceded(
         tag("long"),
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
                 parse_var_name,
-                opt(parse_long_default),
+                opt(context(
+                    "long default",
+                    preceded(space_delimited(tag("=")), map_long),
+                )),
             ))),
             char(';'),
         )),
@@ -389,21 +386,13 @@ pub fn parse_long(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarNa
 // ```
 // 20.0
 // ```
-pub fn map_float(input: &str) -> IResult<&str, f32> {
-    map_res(
-        take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
-        |v: &str| v.parse::<f32>(),
-    )(input)
-}
-
-// Sample:
-// ```
-// = 20.0
-// ```
-pub fn parse_float_default(input: &str) -> IResult<&str, f32> {
-    context(
-        "float default",
-        preceded(space_delimited(tag("=")), map_float),
+pub fn map_float(input: &str) -> IResult<&str, Value> {
+    map_opt(
+        map_res(
+            take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
+            |v: &str| v.parse::<f32>(),
+        ),
+        |v| Some(Value::Number(Number::from_f64(v as f64)?)),
     )(input)
 }
 
@@ -411,14 +400,19 @@ pub fn parse_float_default(input: &str) -> IResult<&str, f32> {
 // ```
 // float age = 20;
 // ```
-pub fn parse_float(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<f32>)> {
+pub fn parse_float(
+    input: &str,
+) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<Value>)> {
     preceded(
         tag("float"),
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
                 parse_var_name,
-                opt(parse_float_default),
+                opt(context(
+                    "float default",
+                    preceded(space_delimited(tag("=")), map_float),
+                )),
             ))),
             char(';'),
         )),
@@ -429,21 +423,13 @@ pub fn parse_float(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarN
 // ```
 // 20.0
 // ```
-fn map_double(input: &str) -> IResult<&str, f64> {
-    map_res(
-        take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
-        |v: &str| v.parse::<f64>(),
-    )(input)
-}
-
-// Sample:
-// ```
-// = 20.0
-// ```
-pub fn parse_double_default(input: &str) -> IResult<&str, f64> {
-    context(
-        "double default",
-        preceded(space_delimited(tag("=")), map_double),
+fn map_double(input: &str) -> IResult<&str, Value> {
+    map_opt(
+        map_res(
+            take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
+            |v: &str| v.parse::<f64>(),
+        ),
+        |v| Some(Value::Number(Number::from_f64(v)?)),
     )(input)
 }
 
@@ -453,26 +439,79 @@ pub fn parse_double_default(input: &str) -> IResult<&str, f64> {
 // ```
 pub fn parse_double(
     input: &str,
-) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<f64>)> {
+) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<Value>)> {
     preceded(
         tag("double"),
         cut(terminated(
             space_delimited(tuple((
                 opt(space_delimited(parse_order)),
                 parse_var_name,
-                opt(parse_double_default),
+                opt(context(
+                    "double default",
+                    preceded(space_delimited(tag("=")), map_double),
+                )),
             ))),
             char(';'),
         )),
     )(input)
 }
 
-// Sample
+// Samples
+// ```
+// = []
+// = ["myname"]
+// = [""]
+// = [1]
+// ```
+pub fn parse_array_default(input: &str) -> IResult<&str, Vec<Value>> {
+    todo!()
+}
+
+// Samples
 // ```
 // array<long> arrayOfLongs;
+// array<long> @aliases(["vecOfLongs"]) arrayOfLongs;
 // ```
-pub fn parse_array(input: &str) -> IResult<&str, (&str, Option<f64>)> {
-    todo!("I think we are gonna have to change to an enum. It should return one of the enum")
+pub fn parse_array(
+    input: &str,
+) -> IResult<
+    &str,
+    (
+        Schema,
+        Option<RecordFieldOrder>,
+        Option<Vec<Alias>>,
+        VarName,
+        Option<Vec<Value>>,
+    ),
+> {
+    let (tail, schema_array_type) = preceded(
+        tag("array"),
+        delimited(
+            tag("<"),
+            map_type_to_schema,
+            tag(">"),
+        ),
+    )(input)?;
+    let schema_kind = schema_array_type.clone().into();
+    let (tail, (order, aliases, varname, defaults)) = terminated(
+        tuple((
+            opt(space_delimited(parse_order)),
+            opt(space_delimited(parse_aliases)),
+            space_delimited(parse_var_name),
+            // default
+            opt(preceded(
+                space_delimited(tag("=")),
+                delimited(
+                    tag("["),
+                    separated_list0(tag(","), parse_based_on_schema(schema_kind)),
+                    tag("]"),
+                )
+            )),
+        )),
+        tag(";"),
+    )(tail)?;
+
+    Ok((tail, (Schema::Array(Box::new(schema_array_type)), order, aliases, varname, defaults)))
 }
 
 pub fn parse_union_default(input: &str) -> IResult<&str, &str> {
@@ -480,6 +519,21 @@ pub fn parse_union_default(input: &str) -> IResult<&str, &str> {
     preceded(space_delimited(tag("=")), take_until(";"))(input)
 }
 
+pub fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
+    map(alphanumeric1, |value_type| match value_type {
+        "null" => Schema::Null,
+        "boolean" => Schema::Boolean,
+        "string" => Schema::String,
+        "int" => Schema::Int,
+        "double" => Schema::Double,
+        "float" => Schema::Float,
+        "long" => Schema::Long,
+        "bytes" => Schema::Bytes,
+        // TODO: Add array
+        // TOOD: return nom Error instead of panic
+        _ => panic!("Something went wrong {value_type}"),
+    })(input)
+}
 // Sample
 // ```
 // union { null, string } item_id = null;
@@ -504,21 +558,7 @@ pub fn parse_union(
         tag("union"),
         delimited(
             space_delimited(tag("{")),
-            separated_list1(
-                space_delimited(tag(",")),
-                map(alphanumeric1, |value_type| match value_type {
-                    "null" => Schema::Null,
-                    "boolean" => Schema::Boolean,
-                    "string" => Schema::String,
-                    "int" => Schema::Int,
-                    "double" => Schema::Double,
-                    "float" => Schema::Float,
-                    "long" => Schema::Long,
-                    "bytes" => Schema::Bytes,
-                    // TOOD: return nom Error instead of panic
-                    _ => panic!("Something went wrong {value_type}"),
-                }),
-            ),
+            separated_list1(space_delimited(tag(",")), map_type_to_schema),
             space_delimited(tag("}")),
         ),
     );
@@ -534,7 +574,7 @@ pub fn parse_union(
     let first_schema_kind: SchemaKind = first_schema.into();
     let (tail, y) = terminated(
         opt(map_opt(parse_union_default, |v| {
-            Some(map_schema_to_value(first_schema_kind.clone(), v))
+            Some(map_schema_to_value(v, first_schema_kind.clone()))
         })),
         char(';'),
     )(tail)?;
@@ -557,38 +597,51 @@ fn parse_record_name(input: &str) -> IResult<&str, &str> {
     preceded(tag("record"), space_delimited(alphanumeric1))(input)
 }
 
-fn map_schema_to_value(schema: SchemaKind, value: &str) -> Value {
+// parse according to the given schema
+fn parse_based_on_schema(schema: SchemaKind) -> impl FnMut(&str) -> IResult<&str, Value> {
+    match schema {
+        SchemaKind::Null => map_null,
+        SchemaKind::Boolean => map_bool,
+        SchemaKind::Int => map_int,
+        SchemaKind::Long => map_long,
+        SchemaKind::Float => map_float,
+        SchemaKind::Double => map_double,
+        SchemaKind::Bytes => map_bytes,
+        SchemaKind::String => map_string,
+        _ => unimplemented!("Not implemented yet"),
+    }
+}
+
+fn map_schema_to_value(value: &str, schema: SchemaKind) -> Value {
     match schema {
         SchemaKind::Null => Value::Null,
         SchemaKind::Boolean => {
             let (_, v) = map_bool(value).unwrap();
-            Value::Bool(v)
+            v
         }
         SchemaKind::Int => {
             let (_, v) = map_int(value).unwrap();
-            Value::Number(v.into())
+            v
         }
         SchemaKind::Long => {
             let (_, v) = map_long(value).unwrap();
-            Value::Number(v.into())
+            v
         }
         SchemaKind::Float => {
             let (_, v) = map_float(value).unwrap();
-            Value::Number(Number::from_f64(v.into()).expect("Could not handle f32"))
+            v
         }
         SchemaKind::Double => {
             let (_, v) = map_double(value).unwrap();
-            Value::Number(Number::from_f64(v).expect("Could not handle f64"))
+            v
         }
         SchemaKind::Bytes => {
-            let (_, pstr) = map_string(value).expect("invalid string");
-            let v: Vec<u8> = Vec::from(pstr);
-
-            Value::Array(v.into_iter().map(|b| b.into()).collect())
+            let (_, v) = map_bytes(value).expect("invalid bytes");
+            v
         }
         SchemaKind::String => {
-            let (_, pstr) = map_string(value).expect("invalid string");
-            Value::String(pstr.to_string())
+            let (_, v) = map_string(value).expect("invalid string");
+            v
         }
         _ => unimplemented!("Not implemented yet"),
     }
@@ -618,7 +671,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
             map(parse_boolean, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
-                default: default.map(|v| Value::Bool(v)),
+                default: default,
                 schema: Schema::Boolean,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
                 aliases: None,
@@ -628,7 +681,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
             map(parse_int, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
-                default: default.map(|v| Value::Number(v.into())),
+                default: default,
                 schema: Schema::Int,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
                 aliases: None,
@@ -638,7 +691,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
             map(parse_long, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
-                default: default.map(|v| Value::Number(v.into())),
+                default: default,
                 schema: Schema::Long,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
                 aliases: None,
@@ -648,9 +701,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
             map(parse_float, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
-                default: default.map(|v| {
-                    Value::Number(Number::from_f64(v.into()).expect("Could not handle f32"))
-                }),
+                default: default,
                 schema: Schema::Float,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
                 aliases: None,
@@ -660,8 +711,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
             map(parse_double, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
-                default: default
-                    .map(|v| Value::Number(Number::from_f64(v).expect("Could not handle f64"))),
+                default: default,
                 schema: Schema::Double,
                 order: order.unwrap_or(RecordFieldOrder::Ascending),
                 aliases: None,
@@ -764,10 +814,11 @@ mod test {
     use std::collections::BTreeMap;
 
     use super::{
-        parse_aliases, parse_boolean, parse_bytes, parse_doc, parse_double, parse_enum,
-        parse_enum_default, parse_enum_item, parse_enum_symbols, parse_field, parse_float,
-        parse_int, parse_long, parse_namespace, parse_namespace_value, parse_order, parse_protocol,
-        parse_record, parse_record_name, parse_string, parse_union, parse_var_name, VarName,
+        parse_aliases, parse_array, parse_boolean, parse_bytes, parse_doc, parse_double,
+        parse_enum, parse_enum_default, parse_enum_item, parse_enum_symbols, parse_field,
+        parse_float, parse_int, parse_long, parse_namespace, parse_namespace_value, parse_order,
+        parse_protocol, parse_record, parse_record_name, parse_string, parse_union, parse_var_name,
+        VarName,
     };
     use crate::schema::{RecordField, Schema};
     use apache_avro::schema::{Alias, Name, RecordFieldOrder, Schema as SourceSchema};
@@ -778,16 +829,16 @@ mod test {
     #[case("string message;", (None, None, "message",None))]
     #[case("string  message;", (None, None, "message",None))]
     #[case("string message ;", (None, None, "message",None))]
-    #[case(r#"string message = "holis" ;"#, (None, None, "message",Some("holis")))]
-    #[case(r#"string message = "holis";"#, (None, None, "message",Some("holis")))]
-    #[case(r#"string @order("ignore") message = "holis";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some("holis")))]
+    #[case(r#"string message = "holis" ;"#, (None, None, "message",Some(Value::String("holis".into()))))]
+    #[case(r#"string message = "holis";"#, (None, None, "message",Some(Value::String("holis".into()))))]
+    #[case(r#"string @order("ignore") message = "holis";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis".into()))))]
     fn test_parse_string_ok(
         #[case] input: &str,
         #[case] expected: (
             Option<RecordFieldOrder>,
             Option<Vec<Alias>>,
             &str,
-            Option<&str>,
+            Option<Value>,
         ),
     ) {
         assert_eq!(parse_string(input), Ok(("", expected)));
@@ -835,16 +886,16 @@ mod test {
     #[case("bytes message;", (None, None, "message",None))]
     #[case("bytes  message;", (None, None, "message",None))]
     #[case("bytes message ;", (None, None, "message",None))]
-    #[case(r#"bytes message = "holis" ;"#, (None, None, "message",Some("holis")))]
-    #[case(r#"bytes message = "holis";"#, (None, None, "message",Some("holis")))]
-    #[case(r#"bytes @order("ignore") message = "holis";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some("holis")))]
+    #[case(r#"bytes message = "holis" ;"#, (None, None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
+    #[case(r#"bytes message = "holis";"#, (None, None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
+    #[case(r#"bytes @order("ignore") message = "holis";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
     fn test_parse_bytes_ok(
         #[case] input: &str,
         #[case] expected: (
             Option<RecordFieldOrder>,
             Option<Vec<Alias>>,
             &str,
-            Option<&str>,
+            Option<Value>,
         ),
     ) {
         assert_eq!(parse_bytes(input), Ok(("", expected)));
@@ -853,12 +904,12 @@ mod test {
     #[rstest]
     #[case("boolean active;", (None, "active", None))]
     #[case(r#"boolean @order("ignore") active;"#, (Some(RecordFieldOrder::Ignore), "active", None))]
-    #[case("boolean active = true;", (None, "active", Some(true)))]
-    #[case("boolean active = false;", (None, "active", Some(false)))]
-    #[case("boolean   active   =   false ;", (None, "active", Some(false)))]
+    #[case("boolean active = true;", (None, "active", Some(Value::Bool(true))))]
+    #[case("boolean active = false;", (None, "active", Some(Value::Bool(false))))]
+    #[case("boolean   active   =   false ;", (None, "active", Some(Value::Bool(false))))]
     fn test_parse_boolean_ok(
         #[case] input: &str,
-        #[case] expected: (Option<RecordFieldOrder>, &str, Option<bool>),
+        #[case] expected: (Option<RecordFieldOrder>, &str, Option<Value>),
     ) {
         assert_eq!(parse_boolean(input), Ok(("", expected)));
     }
@@ -877,12 +928,12 @@ mod test {
 
     #[rstest]
     #[case("int age;", (None, "age", None))]
-    #[case("int age = 12;", (None, "age", Some(12)))]
-    #[case("int age = 0;", (None, "age", Some(0)))]
-    #[case("int   age   =   123 ;", (None, "age", Some(123)))]
+    #[case("int age = 12;", (None, "age", Some(Value::Number(12.into()))))]
+    #[case("int age = 0;", (None, "age", Some(Value::Number(0.into()))))]
+    #[case("int   age   =   123 ;", (None, "age", Some(Value::Number(123.into()))))]
     fn test_parse_int_ok(
         #[case] input: &str,
-        #[case] expected: (Option<RecordFieldOrder>, &str, Option<i32>),
+        #[case] expected: (Option<RecordFieldOrder>, &str, Option<Value>),
     ) {
         assert_eq!(parse_int(input), Ok(("", expected)));
     }
@@ -902,30 +953,30 @@ mod test {
 
     #[rstest]
     #[case("long stock;", (None, "stock", None))]
-    #[case("long stock = 12;", (None, "stock", Some(12)))]
-    #[case("long stock = 9223372036854775807;", (None, "stock", Some(9223372036854775807)))]
-    #[case("long stock = 0;", (None, "stock", Some(0)))]
-    #[case("long   stock   =   123 ;", (None, "stock", Some(123)))]
+    #[case("long stock = 12;", (None, "stock", Some(Value::Number(12.into()))))]
+    #[case("long stock = 9223372036854775807;", (None, "stock", Some(Value::Number(Number::from(9223372036854775807 as i64)))))]
+    #[case("long stock = 0;", (None, "stock", Some(Value::Number(0.into()))))]
+    #[case("long   stock   =   123 ;", (None, "stock", Some(Value::Number(123.into()))))]
     fn test_parse_long_ok(
         #[case] input: &str,
-        #[case] expected: (Option<RecordFieldOrder>, &str, Option<i64>),
+        #[case] expected: (Option<RecordFieldOrder>, &str, Option<Value>),
     ) {
         assert_eq!(parse_long(input), Ok(("", expected)));
     }
-
+    //
     #[rstest]
     #[case("float age;", (None, "age", None))]
-    #[case("float age = 12;", (None, "age", Some(12.0)))]
-    #[case("float age = 12.0;", (None, "age", Some(12.0)))]
-    #[case("float age = 0.0;", (None, "age", Some(0.0)))]
-    #[case("float age = .0;", (None, "age", Some(0.0)))]
-    #[case("float age = 0.1123;", (None, "age", Some(0.1123)))]
-    #[case("float age = 3.40282347e38;", (None, "age", Some(f32::MAX)))]
-    #[case("float age = 0;", (None, "age", Some(0.0)))]
-    #[case("float   age   =   123 ;", (None, "age", Some(123.0)))]
+    #[case("float age = 12;", (None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("float age = 12.0;", (None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("float age = 0.0;", (None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float age = .0;", (None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float age = 0.1123;", (None, "age", Some(Value::Number(Number::from_f64(0.1123).unwrap()))))]
+    #[case("float age = 3.40282347e38;", (None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
+    #[case("float age = 0;", (None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float   age   =   123 ;", (None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
     fn test_parse_float_ok(
         #[case] input: &str,
-        #[case] expected: (Option<RecordFieldOrder>, &str, Option<f32>),
+        #[case] expected: (Option<RecordFieldOrder>, &str, Option<Value>),
     ) {
         assert_eq!(parse_float(input), Ok(("", expected)));
     }
@@ -947,18 +998,18 @@ mod test {
 
     #[rstest]
     #[case("double stock;", (None, "stock", None))]
-    #[case("double stock = 12;", (None, "stock", Some(12.0)))]
-    #[case("double stock = 9223372036854775807;", (None, "stock", Some(9223372036854775807.0)))]
-    #[case("double stock = 123.456;", (None, "stock", Some(123.456)))]
-    #[case("double stock = 1.7976931348623157e308;", (None, "stock", Some(f64::MAX)))]
-    #[case("double stock = 0.0;", (None, "stock", Some(0.0)))]
-    #[case("double stock = .0;", (None, "stock", Some(0.0)))]
-    #[case("double stock = 0;", (None, "stock", Some(0.0)))]
-    #[case(r#"double @order("descending") stock = 0;"#, (Some(RecordFieldOrder::Descending), "stock", Some(0.0)))]
-    #[case("double   stock   =   123.3 ;", (None, "stock", Some(123.3)))]
+    #[case("double stock = 12;", (None, "stock", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("double stock = 9223372036854775807;", (None, "stock", Some(Value::Number(Number::from_f64(9223372036854775807.0).unwrap()))))]
+    #[case("double stock = 123.456;", (None, "stock", Some(Value::Number(Number::from_f64(123.456).unwrap()))))]
+    #[case("double stock = 1.7976931348623157e308;", (None, "stock", Some(Value::Number(Number::from_f64(f64::MAX).unwrap()))))]
+    #[case("double stock = 0.0;", (None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("double stock = .0;", (None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("double stock = 0;", (None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case(r#"double @order("descending") stock = 0;"#, (Some(RecordFieldOrder::Descending), "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("double   stock   =   123.3 ;", (None, "stock", Some(Value::Number(Number::from_f64(123.3).unwrap()))))]
     fn test_parse_double_ok(
         #[case] input: &str,
-        #[case] expected: (Option<RecordFieldOrder>, &str, Option<f64>),
+        #[case] expected: (Option<RecordFieldOrder>, &str, Option<Value>),
     ) {
         assert_eq!(parse_double(input), Ok(("", expected)));
     }
@@ -1099,6 +1150,27 @@ mod test {
     )]
     fn test_parse_namespace(#[case] input: &str, #[case] expected: String) {
         assert_eq!(parse_namespace(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case("array<string> stock;", (Schema::Array(Box::new(Schema::String)), None, None, "stock", None))]
+    #[case("array<string> stock = [];", (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::new())))]
+    #[case(r#"array<string> stock = [""];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from([Value::String(String::from(""))]))))]
+    #[case(r#"array<string> stock = ["cacao nibs"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from([Value::String(String::from("cacao nibs"))]))))]
+    #[case(r#"array<string> stock = ["cacao"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from([Value::String(String::from("cacao"))]))))]
+    #[case(r#"array<string> @aliases(["item"]) stock;"#, (Schema::Array(Box::new(Schema::String)), None, Some(vec![Alias::new("item").unwrap()]), "stock", None))]
+    #[case(r#"array<string> @order("ascending") stock;"#, (Schema::Array(Box::new(Schema::String)), Some(RecordFieldOrder::Ascending), None, "stock", None))]
+    fn test_parse_array_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<RecordFieldOrder>,
+            Option<Vec<Alias>>,
+            VarName,
+            Option<Vec<Value>>
+        ),
+    ) {
+        assert_eq!(parse_array(input), Ok(("", expected)));
     }
 
     #[rstest]

@@ -35,6 +35,9 @@ to the original, in case we can use it in the future.
     - [ ] timestamp_ms (logical type timestamp-millis)
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
     - [ ] Arrays
+        - [x] basic support
+        - [ ] defaults?
+        - [ ] array of array
     - [ ] Maps
     - [x] Unions
 - [Default values](https://avro.apache.org/docs/1.11.1/idl-language/#default-values)

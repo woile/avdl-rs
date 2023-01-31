@@ -1,0 +1,5 @@
+protocol MyProtocol {
+    record ArrayAlias {
+        array<string> @aliases(["vecOfStr"]) arrayOfStr = ["pepe"];
+    }
+}
