@@ -1,5 +1,7 @@
 protocol MyProtocol {
     record ArrayAlias {
         array<string> @aliases(["vecOfStr"]) arrayOfStr = ["pepe"];
+        union {array<string>, int}  strangeArray = ["12"];
+        union {int, array<string>}  strangeArray1 = 1;
     }
 }

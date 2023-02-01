@@ -21,6 +21,7 @@ to the original, in case we can use it in the future.
 - [ ] [Protocol](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-protocol-in-avro-idl)
 - [Primitive types](https://avro.apache.org/docs/1.11.1/idl-language/#primitive-types)
     - [x] string = &str
+        - [ ] properly parse JSON strings
     - [x] boolean = bool
     - [x] int = i32
     - [x] long = i64
@@ -36,7 +37,7 @@ to the original, in case we can use it in the future.
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
     - [ ] Arrays
         - [x] basic support
-        - [ ] defaults?
+        - [x] defaults?
         - [ ] array of array
     - [ ] Maps
     - [x] Unions
