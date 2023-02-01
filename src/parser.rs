@@ -617,17 +617,17 @@ fn parse_based_on_schema<'r>(schema: &Schema) -> impl FnMut(&'r str) -> IResult<
         Schema::Double => map_double,
         Schema::Bytes => map_bytes,
         Schema::String => map_string,
-        // Schema::Array(schema) => {
-        //     let schema = *schema;
-        //     let array_parser = parse_based_on_schema(&schema);
-        //     |input:&'r str | {
-        //         delimited(
-        //             tag("["),
-        //             map(separated_list0(tag(","), array_parser), |s| Value::Array(s)),
-        //             tag("]"),
-        //         )(input)
-        //     }
-        // },
+        Schema::Array(schema) => {
+            let schema = *schema;
+            let array_parser = parse_based_on_schema(&schema);
+            |input:&'r str | {
+                delimited(
+                    tag("["),
+                    map(separated_list0(tag(","), array_parser), |s| Value::Array(s)),
+                    tag("]"),
+                )(input)
+            }
+        },
         _ => unimplemented!("Not implemented yet"),
     }
 }
