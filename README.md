@@ -5,7 +5,7 @@
 ## Notes
 
 - `apache_avro::Schema` cannot be used to generate the avsc because `RecordField` is missing things like `aliases`. We have a reimplementation internally with some extras. I try to keep it as close as possible
-to the original, in case we can use it in the future.
+to the original, in case we can use it in the future. [AVRO-3709](https://issues.apache.org/jira/browse/AVRO-3709)
 
 ## Parsers
 
@@ -39,7 +39,7 @@ to the original, in case we can use it in the future.
         - [x] basic support
         - [x] defaults?
         - [x] array of array
-    - [ ] Maps
+    - [x] Maps
     - [x] Unions
 - [Default values](https://avro.apache.org/docs/1.11.1/idl-language/#default-values)
     - [x] Enum

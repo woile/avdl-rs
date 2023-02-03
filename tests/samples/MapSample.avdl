@@ -1,0 +1,14 @@
+protocol MyProtocol {
+    record MapSample {
+        map<int> foo;
+        map<int> foo2 = {};
+        map<int> foo3 = {
+            "bar": 3
+        };
+        map<array<int>> foo4 = {
+            "bar": [1, 2]  ,
+            "red": [1, 2],"blue": [1, 2]
+        };
+
+    }
+}

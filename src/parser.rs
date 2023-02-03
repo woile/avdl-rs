@@ -4,7 +4,8 @@ use apache_avro::schema::{Alias, Name, RecordFieldOrder};
 
 use nom::combinator::{map_opt, verify};
 
-use nom::multi::separated_list0;
+use nom::multi::{fold_many0, separated_list0};
+use nom::sequence::pair;
 use nom::{
     branch::{alt, permutation},
     bytes::complete::{escaped, tag, take_until, take_while, take_while1},
@@ -18,7 +19,7 @@ use nom::{
     sequence::{delimited, preceded, terminated, tuple},
     AsChar, IResult, InputTake, InputTakeAtPosition, Parser,
 };
-use serde_json::{Number, Value};
+use serde_json::{Map, Number, Value};
 
 use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
 use crate::string_parser::parse_string as parse_string_uni;
@@ -512,6 +513,77 @@ pub fn parse_array(
     ))
 }
 
+pub fn parse_map_default_item(input: &str) -> IResult<&str, (String, Value)> {
+    pair(
+        parse_string_uni,
+        preceded(
+            space_delimited(tag(":")),
+            parse_based_on_schema(Box::new(Schema::String)),
+        ),
+    )(input)
+}
+
+// Sample:
+// ```
+// map<int> foo2 = {};
+// ```
+pub fn parse_map(
+    input: &str,
+) -> IResult<
+    &str,
+    (
+        Schema,
+        Option<RecordFieldOrder>,
+        Option<Vec<Alias>>,
+        VarName,
+        Option<Value>,
+    ),
+> {
+    let (tail, schema) = preceded(
+        tag("map"),
+        delimited(tag("<"), map_type_to_schema, tag(">")),
+    )(input)?;
+    let schema_for_parser = Box::new(schema.clone());
+    let map_default_parser = parse_based_on_schema(schema_for_parser);
+    let (tail, (order, aliases, varname, defaults)) = terminated(
+        tuple((
+            opt(space_delimited(parse_order)),
+            opt(space_delimited(parse_aliases)),
+            space_delimited(parse_var_name),
+            // default
+            opt(preceded(
+                space_delimited(tag("=")),
+                delimited(
+                    tag("{"),
+                    map(
+                        separated_list0(
+                            space_delimited(tag(",")),
+                            pair(
+                                parse_string_uni,
+                                preceded(space_delimited(tag(":")), map_default_parser),
+                            ),
+                        ),
+                        |v| Value::Object(Map::from_iter(v)),
+                    ),
+                    tag("}"),
+                ),
+            )),
+        )),
+        tag(";"),
+    )(tail)?;
+
+    Ok((
+        tail,
+        (
+            Schema::Map(Box::new(schema)),
+            order,
+            aliases,
+            varname,
+            defaults,
+        ),
+    ))
+}
+
 pub fn parse_union_default(input: &str) -> IResult<&str, &str> {
     // This should be take_until ";"
     preceded(space_delimited(tag("=")), take_until(";"))(input)
@@ -854,12 +926,13 @@ mod test {
         parse_enum, parse_enum_default, parse_enum_item, parse_enum_symbols, parse_field,
         parse_float, parse_int, parse_long, parse_namespace, parse_namespace_value, parse_order,
         parse_protocol, parse_record, parse_record_name, parse_string, parse_union, parse_var_name,
+        parse_map,
         VarName,
     };
     use crate::schema::{RecordField, Schema};
     use apache_avro::schema::{Alias, Name, RecordFieldOrder, Schema as SourceSchema};
     use rstest::rstest;
-    use serde_json::{Number, Value};
+    use serde_json::{Number, Value, Map};
 
     #[rstest]
     #[case("string message;", (None, None, "message",None))]
@@ -1193,6 +1266,23 @@ mod test {
         ),
     ) {
         assert_eq!(parse_array(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(r#"map<string> stock;"#, (Schema::Map(Box::new(Schema::String)), None, None, "stock", None))]
+    #[case(r#"map<string> @order("ascending") stock;"#, (Schema::Map(Box::new(Schema::String)), Some(RecordFieldOrder::Ascending), None, "stock", None))]
+    #[case(r#"map<string> stock = {"hey": "hello"};"#, (Schema::Map(Box::new(Schema::String)), None, None, "stock", Some(Value::Object(Map::from_iter([(String::from("hey"), Value::String(String::from("hello")))])))))]
+    fn test_parse_map_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<RecordFieldOrder>,
+            Option<Vec<Alias>>,
+            VarName,
+            Option<Value>,
+        ),
+    ) {
+        assert_eq!(parse_map(input), Ok(("", expected)));
     }
 
     #[rstest]
