@@ -1,8 +1,9 @@
 #[macro_use]
 extern crate serde_json;
 
-use apache_avro::Schema;
+// use apache_avro::Schema;
 use avdl_rs::parser::{parse_protocol};
+use avdl_rs::schema::Schema;
 use std::env;
 use std::fs;
 use std::path::Path;

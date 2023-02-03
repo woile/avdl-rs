@@ -1,0 +1,13 @@
+protocol MyProtocol {
+    record StringsSamples {
+        string name = "";
+        string name2 = "jon";
+        string with_spaces = "jon asd";
+        string symbols = "$%$#";
+        // string multiline = "
+        // hello
+
+        // what should happen?
+        // "
+    }
+}

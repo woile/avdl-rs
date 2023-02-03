@@ -51,6 +51,7 @@ to the original, in case we can use it in the future.
 ## Resources
 
 - [simple.avdl](https://github.com/apache/avro/blob/b918209e42f18174bc90b1d8bd68402d96d93353/lang/java/compiler/src/test/idl/input/simple.avdl#L37)
+- [field validations](https://github.com/apache/avro/blob/master/lang/java/avro/src/main/java/org/apache/avro/Schema.java#L959)
 
 ## Thanks
 

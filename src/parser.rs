@@ -21,7 +21,7 @@ use nom::{
 use serde_json::{Number, Value};
 
 use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
-
+use crate::string_parser::parse_string as parse_string_uni;
 // Alias to give more clarity on what is being returned
 type VarName<'a> = &'a str;
 type EnumSymbol<'a> = &'a str;
@@ -200,7 +200,7 @@ pub fn parse_string_value(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn map_string(input: &str) -> IResult<&str, Value> {
-    map(parse_string_value, |v| Value::String(v.into()))(input)
+    map(parse_string_uni, |v| Value::String(v.into()))(input)
 }
 
 pub fn map_bytes(input: &str) -> IResult<&str, Value> {
@@ -489,7 +489,10 @@ pub fn parse_array(
                 space_delimited(tag("=")),
                 delimited(
                     tag("["),
-                    map(separated_list0(tag(","), array_default_parser), Value::Array),
+                    map(
+                        separated_list0(tag(","), array_default_parser),
+                        Value::Array,
+                    ),
                     tag("]"),
                 ),
             )),
@@ -497,7 +500,16 @@ pub fn parse_array(
         tag(";"),
     )(tail)?;
 
-    Ok((tail, (Schema::Array(Box::new(schema_array_type)), order, aliases, varname, defaults)))
+    Ok((
+        tail,
+        (
+            Schema::Array(Box::new(schema_array_type)),
+            order,
+            aliases,
+            varname,
+            defaults,
+        ),
+    ))
 }
 
 pub fn parse_union_default(input: &str) -> IResult<&str, &str> {
@@ -684,7 +696,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 |(doc, (order, aliases, name, default))| RecordField {
                     name: name.to_string(),
                     doc: doc.map(String::from),
-                    default: default.map(|v| Value::String(v.to_string())),
+                    default: default,
                     schema: Schema::String,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
                     aliases: aliases,
@@ -856,6 +868,7 @@ mod test {
     #[case(r#"string message = "holis" ;"#, (None, None, "message",Some(Value::String("holis".into()))))]
     #[case(r#"string message = "holis";"#, (None, None, "message",Some(Value::String("holis".into()))))]
     #[case(r#"string @order("ignore") message = "holis";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis".into()))))]
+    #[case(r#"string @order("ignore") message = "holis how are you";"#, (Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis how are you".into()))))]
     fn test_parse_string_ok(
         #[case] input: &str,
         #[case] expected: (
@@ -868,16 +881,12 @@ mod test {
         assert_eq!(parse_string(input), Ok(("", expected)));
     }
 
-    #[test]
-    fn test_parse_string_fail() {
-        let invalid_strings = [
-            "string message",              // missing semi-colon
-            r#"string message = "holis"#,  // unclosed quote
-            r#"string message = "holis""#, // no semi-colon
-        ];
-        for input in invalid_strings {
-            assert!(parse_string(input).is_err());
-        }
+    #[rstest]
+    #[case("string message")] // no semi-colon
+    #[case(r#"string message = "holis"#)] // unclosed quote
+    #[case(r#"string message = "holis""#)] // default no semi-colon
+    fn test_parse_string_fail(#[case] input: &str) {
+        assert!(parse_string(input).is_err());
     }
 
     #[rstest]
@@ -892,18 +901,14 @@ mod test {
         assert_eq!(parse_var_name(input), Ok((tail, expected)))
     }
 
-    #[test]
-    fn test_parse_var_name_fail() {
-        let invalid_var_name = [
-            "1var_name",
-            "-1var_name",
-            "$0_1var_name",
-            "1_n20umbers3",
-            "1_n20umbers3_",
-        ];
-        for input in invalid_var_name {
-            assert!(parse_var_name(input).is_err());
-        }
+    #[rstest]
+    #[case("1var_name")]
+    #[case("-1var_name")]
+    #[case("$0_1var_name")]
+    #[case("1_n20umbers3")]
+    #[case("1_n20umbers3_")]
+    fn test_parse_var_name_fail(#[case] input: &str) {
+        assert!(parse_var_name(input).is_err());
     }
 
     #[rstest]
@@ -938,16 +943,12 @@ mod test {
         assert_eq!(parse_boolean(input), Ok(("", expected)));
     }
 
-    #[test]
-    fn test_parse_boolean_fail() {
-        let invalid_booleans = [
-            "boolean message",              // missing semi-colon
-            r#"boolean message = "false""#, // wrong type
-            r#"boolean message = true"#,    // missing semi-colon with default
-        ];
-        for input in invalid_booleans {
-            assert!(parse_boolean(input).is_err());
-        }
+    #[rstest]
+    #[case("boolean message")] // no semi-colon
+    #[case(r#"boolean message = "false""#)] // wrong type
+    #[case(r#"boolean message = true"#)] // no semi-colon with default
+    fn test_parse_boolean_fail(#[case] input: &str) {
+        assert!(parse_boolean(input).is_err());
     }
 
     #[rstest]
@@ -962,17 +963,13 @@ mod test {
         assert_eq!(parse_int(input), Ok(("", expected)));
     }
 
-    #[test]
-    fn test_parse_int_fail() {
-        let invalid_ints = [
-            "int age",                        // missing semi-colon
-            r#"int age = "false""#,           // wrong type
-            r#"int age = 123"#,               // missing semi-colon with default
-            "int age = 9223372036854775807;", // longer than i32
-        ];
-        for input in invalid_ints {
-            assert!(parse_int(input).is_err());
-        }
+    #[rstest]
+    #[case("int age")] // missing semi-colon
+    #[case(r#"int age = "false""#)] // wrong type
+    #[case(r#"int age = 123"#)] // missing semi-colon with default
+    #[case("int age = 9223372036854775807;")] // longer than i32
+    fn test_parse_int_fail(#[case] input: &str) {
+        assert!(parse_int(input).is_err());
     }
 
     #[rstest]

@@ -1,0 +1,6 @@
+protocol MyProtocol {
+    record HelloArray {
+        string @aliases(["nickname"]) name = "";
+        array<string> stock = [""];
+    }
+}
