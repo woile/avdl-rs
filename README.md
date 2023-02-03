@@ -35,10 +35,10 @@ to the original, in case we can use it in the future.
     - [ ] time_ms (logical type time-millis)
     - [ ] timestamp_ms (logical type timestamp-millis)
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
-    - [ ] Arrays
+    - [x] Arrays
         - [x] basic support
         - [x] defaults?
-        - [ ] array of array
+        - [x] array of array
     - [ ] Maps
     - [x] Unions
 - [Default values](https://avro.apache.org/docs/1.11.1/idl-language/#default-values)
@@ -51,3 +51,7 @@ to the original, in case we can use it in the future.
 ## Resources
 
 - [simple.avdl](https://github.com/apache/avro/blob/b918209e42f18174bc90b1d8bd68402d96d93353/lang/java/compiler/src/test/idl/input/simple.avdl#L37)
+
+## Thanks
+
+All the people that helped in nom's matrix server!

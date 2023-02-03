@@ -470,15 +470,15 @@ pub fn parse_array(
         Option<RecordFieldOrder>,
         Option<Vec<Alias>>,
         VarName,
-        Option<Vec<Value>>,
+        Option<Value>,
     ),
 > {
     let (tail, schema_array_type) = preceded(
         tag("array"),
         delimited(tag("<"), map_type_to_schema, tag(">")),
     )(input)?;
-    // let schema = schema_array_type.clone();
-    let array_default_parser = parse_based_on_schema(&schema_array_type);
+    let schema = Box::new(schema_array_type.clone());
+    let array_default_parser = parse_based_on_schema(schema);
     let (tail, (order, aliases, varname, defaults)) = terminated(
         tuple((
             opt(space_delimited(parse_order)),
@@ -489,7 +489,7 @@ pub fn parse_array(
                 space_delimited(tag("=")),
                 delimited(
                     tag("["),
-                    separated_list0(tag(","), array_default_parser),
+                    map(separated_list0(tag(","), array_default_parser), Value::Array),
                     tag("]"),
                 ),
             )),
@@ -497,7 +497,7 @@ pub fn parse_array(
         tag(";"),
     )(tail)?;
 
-    Ok((tail, (schema_array_type, order, aliases, varname, defaults)))
+    Ok((tail, (Schema::Array(Box::new(schema_array_type)), order, aliases, varname, defaults)))
 }
 
 pub fn parse_union_default(input: &str) -> IResult<&str, &str> {
@@ -605,29 +605,33 @@ fn parse_record_name(input: &str) -> IResult<&str, &str> {
     preceded(tag("record"), space_delimited(alphanumeric1))(input)
 }
 
-
 // parse according to the given schema
-fn parse_based_on_schema<'r>(schema: &Schema) -> impl FnMut(&'r str) -> IResult<&'r str, Value> {
-    match schema {
-        Schema::Null => map_null,
-        Schema::Boolean => map_bool,
-        Schema::Int => map_int,
-        Schema::Long => map_long,
-        Schema::Float => map_float,
-        Schema::Double => map_double,
-        Schema::Bytes => map_bytes,
-        Schema::String => map_string,
+fn parse_based_on_schema<'r>(
+    schema: Box<Schema>,
+) -> Box<dyn FnMut(&'r str) -> IResult<&'r str, Value>> {
+    match *schema {
+        Schema::Null => Box::new(map_null),
+        Schema::Boolean => Box::new(map_bool),
+        Schema::Int => Box::new(map_int),
+        Schema::Long => Box::new(map_long),
+        Schema::Float => Box::new(map_float),
+        Schema::Double => Box::new(map_double),
+        Schema::Bytes => Box::new(map_bytes),
+        Schema::String => Box::new(map_string),
         Schema::Array(schema) => {
-            let schema = *schema;
-            let array_parser = parse_based_on_schema(&schema);
-            |input:&'r str | {
+            // let schema = *schema;
+            // let array_parser = parse_based_on_schema(&schema);
+            Box::new(move |input: &'r str| {
                 delimited(
                     tag("["),
-                    map(separated_list0(tag(","), array_parser), |s| Value::Array(s)),
+                    map(
+                        separated_list0(tag(","), parse_based_on_schema(schema.clone())),
+                        |s| Value::Array(s),
+                    ),
                     tag("]"),
                 )(input)
-            }
-        },
+            }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, Value> + '_>
+        }
         _ => unimplemented!("Not implemented yet"),
     }
 }
@@ -1173,12 +1177,12 @@ mod test {
     }
 
     #[rstest]
+    #[case(r#"array<array<string>> stock = [["cacao"]];"#, (Schema::Array(Box::new(Schema::Array(Box::new(Schema::String)))), None, None, "stock", Some(Value::Array(Vec::from([Value::Array(Vec::from([Value::String(String::from("cacao"))]))])))))]
+    #[case(r#"array<string> stock = ["cacao"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from("cacao"))])))))]
     #[case("array<string> stock;", (Schema::Array(Box::new(Schema::String)), None, None, "stock", None))]
-    #[case("array<string> stock = [];", (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::new())))]
-    #[case(r#"array<string> stock = [""];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from([Value::String(String::from(""))]))))]
-    #[case(r#"array<string> stock = ["cacao nibs"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from([Value::String(String::from("cacao nibs"))]))))]
-    #[case(r#"array<string> stock = ["cacao"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from([Value::String(String::from("cacao"))]))))]
-    #[case(r#"array<array<string>> stock = [["cacao"]];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Vec::from(Vec::from([Value::String(String::from("cacao"))])))))]
+    #[case("array<string> stock = [];", (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::new()))))]
+    #[case(r#"array<string> stock = [""];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from(""))])))))]
+    #[case(r#"array<string> stock = ["cacao nibs"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from("cacao nibs"))])))))]
     #[case(r#"array<string> @aliases(["item"]) stock;"#, (Schema::Array(Box::new(Schema::String)), None, Some(vec![Alias::new("item").unwrap()]), "stock", None))]
     #[case(r#"array<string> @order("ascending") stock;"#, (Schema::Array(Box::new(Schema::String)), Some(RecordFieldOrder::Ascending), None, "stock", None))]
     fn test_parse_array_ok(
@@ -1188,7 +1192,7 @@ mod test {
             Option<RecordFieldOrder>,
             Option<Vec<Alias>>,
             VarName,
-            Option<Vec<Value>>,
+            Option<Value>,
         ),
     ) {
         assert_eq!(parse_array(input), Ok(("", expected)));
