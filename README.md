@@ -30,6 +30,7 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
     - [x] `null` = ?
     - [x] `bytes` = [u8]
 - [Logical types](https://avro.apache.org/docs/1.11.1/idl-language/#logical-types)
+    - [x] `uuid` -> valid uuid `string`
     - [ ] `decimal` (logical type decimal)
     - [x] `date` (logical type date) -> `int`
     - [x] `time_ms` (logical type `time-millis`) -> `int`

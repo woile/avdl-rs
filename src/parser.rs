@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
-use std::time::UNIX_EPOCH;
 
 use apache_avro::schema::{Alias, Name, RecordFieldOrder};
 
+use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
+use crate::string_parser::parse_string as parse_string_uni;
 use nom::character::complete::space0;
 use nom::combinator::{map_opt, verify};
-
-use nom::multi::{fold_many0, separated_list0};
+use nom::multi::separated_list0;
 use nom::sequence::pair;
 use nom::{
     branch::{alt, permutation},
@@ -22,9 +22,8 @@ use nom::{
     AsChar, IResult, InputTake, InputTakeAtPosition, Parser,
 };
 use serde_json::{Map, Number, Value};
-
-use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
-use crate::string_parser::parse_string as parse_string_uni;
+use std::str::FromStr;
+use uuid::Uuid;
 // Alias to give more clarity on what is being returned
 type VarName<'a> = &'a str;
 type EnumSymbol<'a> = &'a str;
@@ -90,6 +89,24 @@ fn parse_aliases(i: &str) -> IResult<&str, Vec<Alias>> {
                 map_res(parse_namespace_value, |namespace| Alias::new(&namespace)),
             ),
             tag("])"),
+        ),
+    )(i)
+}
+
+// Example:
+// ```
+// @logicalType("timestamp-micros")
+// ```
+fn parse_logical_type(i: &str) -> IResult<&str, Schema> {
+    preceded(
+        tag("@logicalType"),
+        delimited(
+            tag("("),
+            map(parse_string_value, |s| match s {
+                "timestamp-micros" => Schema::TimestampMicros,
+                _ => unreachable!("ppe"),
+            }),
+            tag(")"),
         ),
     )(i)
 }
@@ -204,6 +221,13 @@ pub fn parse_string_value(input: &str) -> IResult<&str, &str> {
 
 pub fn map_string(input: &str) -> IResult<&str, Value> {
     map(parse_string_uni, |v| Value::String(v.into()))(input)
+}
+
+pub fn map_uuid(input: &str) -> IResult<&str, Value> {
+    map_res(parse_string_uni, |v| -> Result<Value, String> {
+        Uuid::from_str(&v).map_err(|_e| "not a valid uuid".to_string())?;
+        Ok(Value::String(v.into()))
+    })(input)
 }
 
 pub fn map_bytes(input: &str) -> IResult<&str, Value> {
@@ -643,6 +667,7 @@ pub fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
         value(Schema::TimeMillis, tag("time_ms")),
         value(Schema::TimestampMillis, tag("timestamp_ms")),
         value(Schema::Date, tag("date")),
+        value(Schema::Uuid, tag("uuid")),
     ))(input)
 }
 
@@ -740,6 +765,7 @@ fn parse_based_on_schema<'r>(
         Schema::Date => Box::new(map_int),
         Schema::TimeMillis => Box::new(map_int),
         Schema::TimestampMillis => Box::new(map_long),
+        Schema::Uuid => Box::new(map_uuid),
         _ => unimplemented!("Not implemented yet"),
     }
 }
@@ -865,9 +891,8 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                     custom_attributes: BTreeMap::new(),
                 }
             }),
-            map(
-                parse_map,
-                |(schemas, order, aliases, name, default)| RecordField {
+            map(parse_map, |(schemas, order, aliases, name, default)| {
+                RecordField {
                     name: name.to_string(),
                     doc: None,
                     default: default,
@@ -876,8 +901,8 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                     aliases: aliases,
                     position: 0,
                     custom_attributes: BTreeMap::new(),
-                },
-            ),
+                }
+            }),
             map(
                 parse_logical_field,
                 |(schemas, order, aliases, name, default)| RecordField {
@@ -1102,6 +1127,7 @@ mod test {
     #[case("timestamp_ms age = 12;", (Schema::TimestampMillis, None, None, "age", Some(Value::Number(12.into()))))]
     #[case("date age;", (Schema::Date, None, None, "age", None))]
     #[case("date age = 12;", (Schema::Date, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, "pk", Some(Value::String("a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8".into()))))]
     fn test_parse_logical_field_ok(
         #[case] input: &str,
         #[case] expected: (
@@ -1124,6 +1150,7 @@ mod test {
     #[case(r#"time_ms age = "false""#)] // wrong type
     #[case(r#"time_ms age = 123"#)] // missing semi-colon with default
     #[case("time_ms age = 9223372036854775807;")] // longer than i32
+    #[case(r#"uuid pk = "asd";"#)] // longer than i32
     fn test_parse_logical_field_fail(#[case] input: &str) {
         assert!(parse_logical_field(input).is_err());
     }
