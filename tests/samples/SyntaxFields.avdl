@@ -1,0 +1,9 @@
+protocol MyProtocol {
+    record SyntaxFields {
+        time_ms   elapsed   =   123 ;
+        timestamp_ms when2 = 123;
+        date birth = 123;
+
+    }
+}
+

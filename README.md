@@ -15,25 +15,29 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
 - [x] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [ ] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
 - [ ] [Records and errors](https://avro.apache.org/docs/1.11.1/idl-language/#defining-records-and-errors)
-    - [x] Record
-    - [x] RecordField
+    - [x] `Record`
+    - [x] `RecordField`
     - [ ] Error
 - [ ] [Protocol](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-protocol-in-avro-idl)
 - [Primitive types](https://avro.apache.org/docs/1.11.1/idl-language/#primitive-types)
-    - [x] string = &str
-        - [ ] properly parse JSON strings
-    - [x] boolean = bool
-    - [x] int = i32
-    - [x] long = i64
-    - [x] float = f32
-    - [x] double = f64
-    - [x] null = ?
-    - [x] bytes = [u8]
+    - [x] `string` = &str
+        - [x] properly parse unicode strings
+    - [x] `boolean` = bool
+    - [x] `int` = i32
+    - [x] `long` = i64
+    - [x] `float` = f32
+    - [x] `double` = f64
+    - [x] `null` = ?
+    - [x] `bytes` = [u8]
 - [Logical types](https://avro.apache.org/docs/1.11.1/idl-language/#logical-types)
-    - [ ] decimal (logical type decimal)
-    - [ ] date (logical type date)
-    - [ ] time_ms (logical type time-millis)
-    - [ ] timestamp_ms (logical type timestamp-millis)
+    - [ ] `decimal` (logical type decimal)
+    - [x] `date` (logical type date) -> `int`
+    - [x] `time_ms` (logical type `time-millis`) -> `int`
+    - [ ] logical type `time-micros` -> `long`
+    - [x] `timestamp_ms` (logical type `timestamp-millis`) -> `long`
+        - from the unix epoch, 1 January 1970 00:00:00.000 UTC
+    - [ ] logical type `timestamp-micros` -> `long`
+        - from the unix epoch, 1 January 1970 00:00:00.000 UTC
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
     - [x] Arrays
         - [x] basic support
@@ -42,7 +46,7 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
     - [x] Maps
     - [x] Unions
 - [Default values](https://avro.apache.org/docs/1.11.1/idl-language/#default-values)
-    - [x] Enum
+    - [x] `Enum`
 - [Comments](https://avro.apache.org/docs/1.11.1/idl-language/#comments)
     - [x] doc (`/** foo */`)
     - [ ] comments

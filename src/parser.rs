@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::time::UNIX_EPOCH;
 
 use apache_avro::schema::{Alias, Name, RecordFieldOrder};
 
+use nom::character::complete::space0;
 use nom::combinator::{map_opt, verify};
 
 use nom::multi::{fold_many0, separated_list0};
@@ -457,6 +459,37 @@ pub fn parse_double(
     )(input)
 }
 
+// NEXT: Move primitive also to use this function, easier to maintain
+pub fn parse_logical_field(
+    input: &str,
+) -> IResult<
+    &str,
+    (
+        Schema,
+        Option<RecordFieldOrder>,
+        Option<Vec<Alias>>,
+        VarName,
+        Option<Value>,
+    ),
+> {
+    let (tail, schema) = map_type_to_schema(input)?;
+
+    let boxed_schema = Box::new(schema.clone());
+    let default_parser = parse_based_on_schema(boxed_schema);
+    let (tail, (order, aliases, varname, defaults)) = terminated(
+        tuple((
+            opt(space_delimited(parse_order)),
+            opt(space_delimited(parse_aliases)),
+            space_delimited(parse_var_name),
+            // default
+            opt(preceded(space_delimited(tag("=")), default_parser)),
+        )),
+        preceded(space0, tag(";")),
+    )(tail)?;
+
+    Ok((tail, (schema, order, aliases, varname, defaults)))
+}
+
 // Samples
 // ```
 // array<long> arrayOfLongs;
@@ -607,25 +640,12 @@ pub fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
         value(Schema::Float, tag("float")),
         value(Schema::Long, tag("long")),
         value(Schema::Bytes, tag("bytes")),
+        value(Schema::TimeMillis, tag("time_ms")),
+        value(Schema::TimestampMillis, tag("timestamp_ms")),
+        value(Schema::Date, tag("date")),
     ))(input)
 }
 
-pub fn map_type_to_schemax(input: &str) -> IResult<&str, Schema> {
-    map(alphanumeric1, |value_type| match value_type {
-        "null" => Schema::Null,
-        "boolean" => Schema::Boolean,
-        "string" => Schema::String,
-        "int" => Schema::Int,
-        "double" => Schema::Double,
-        "float" => Schema::Float,
-        "long" => Schema::Long,
-        "bytes" => Schema::Bytes,
-
-        // TODO: Add array
-        // TOOD: return nom Error instead of panic
-        _ => panic!("Something went wrong {value_type}"),
-    })(input)
-}
 // Sample
 // ```
 // union { null, string } item_id = null;
@@ -716,10 +736,15 @@ fn parse_based_on_schema<'r>(
                 )(input)
             }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, Value> + '_>
         }
+        // Logical Types
+        Schema::Date => Box::new(map_int),
+        Schema::TimeMillis => Box::new(map_int),
+        Schema::TimestampMillis => Box::new(map_long),
         _ => unimplemented!("Not implemented yet"),
     }
 }
 
+// TODO: Refactor union to stop using this function and replace with parse_based_on_schema
 fn map_schema_to_value(value: &str, schema: SchemaKind) -> Value {
     match schema {
         SchemaKind::Null => Value::Null,
@@ -840,6 +865,32 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                     custom_attributes: BTreeMap::new(),
                 }
             }),
+            map(
+                parse_map,
+                |(schemas, order, aliases, name, default)| RecordField {
+                    name: name.to_string(),
+                    doc: None,
+                    default: default,
+                    schema: schemas,
+                    order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+            ),
+            map(
+                parse_logical_field,
+                |(schemas, order, aliases, name, default)| RecordField {
+                    name: name.to_string(),
+                    doc: None,
+                    default: default,
+                    schema: schemas,
+                    order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+            ),
         )),
     )(input)
 }
@@ -921,18 +972,11 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
 mod test {
     use std::collections::BTreeMap;
 
-    use super::{
-        parse_aliases, parse_array, parse_boolean, parse_bytes, parse_doc, parse_double,
-        parse_enum, parse_enum_default, parse_enum_item, parse_enum_symbols, parse_field,
-        parse_float, parse_int, parse_long, parse_namespace, parse_namespace_value, parse_order,
-        parse_protocol, parse_record, parse_record_name, parse_string, parse_union, parse_var_name,
-        parse_map,
-        VarName,
-    };
+    use super::*;
     use crate::schema::{RecordField, Schema};
     use apache_avro::schema::{Alias, Name, RecordFieldOrder, Schema as SourceSchema};
     use rstest::rstest;
-    use serde_json::{Number, Value, Map};
+    use serde_json::{Map, Number, Value};
 
     #[rstest]
     #[case("string message;", (None, None, "message",None))]
@@ -1043,6 +1087,45 @@ mod test {
     #[case("int age = 9223372036854775807;")] // longer than i32
     fn test_parse_int_fail(#[case] input: &str) {
         assert!(parse_int(input).is_err());
+    }
+
+    #[rstest]
+    #[case("int age;", (Schema::Int, None, None, "age", None))]
+    #[case("int age = 12;", (Schema::Int, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("int age = 0;", (Schema::Int, None, None, "age", Some(Value::Number(0.into()))))]
+    #[case("int   age   =   123 ;", (Schema::Int, None, None, "age", Some(Value::Number(123.into()))))]
+    #[case("time_ms age;", (Schema::TimeMillis, None, None, "age", None))]
+    #[case("time_ms age = 12;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("time_ms age = 0;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(0.into()))))]
+    #[case("time_ms   age   =   123 ;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(123.into()))))]
+    #[case("timestamp_ms age;", (Schema::TimestampMillis, None, None, "age", None))]
+    #[case("timestamp_ms age = 12;", (Schema::TimestampMillis, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("date age;", (Schema::Date, None, None, "age", None))]
+    #[case("date age = 12;", (Schema::Date, None, None, "age", Some(Value::Number(12.into()))))]
+    fn test_parse_logical_field_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<RecordFieldOrder>,
+            Option<Vec<Alias>>,
+            VarName,
+            Option<Value>,
+        ),
+    ) {
+        assert_eq!(parse_logical_field(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case("int age")] // missing semi-colon
+    #[case(r#"int age = "false""#)] // wrong type
+    #[case(r#"int age = 123"#)] // missing semi-colon with default
+    #[case("int age = 9223372036854775807;")] // longer than i32
+    #[case("time_ms age")] // missing semi-colon
+    #[case(r#"time_ms age = "false""#)] // wrong type
+    #[case(r#"time_ms age = 123"#)] // missing semi-colon with default
+    #[case("time_ms age = 9223372036854775807;")] // longer than i32
+    fn test_parse_logical_field_fail(#[case] input: &str) {
+        assert!(parse_logical_field(input).is_err());
     }
 
     #[rstest]
