@@ -13,7 +13,8 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
 - [x] [Alias](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Namespace](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
-- [ ] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
+- [x] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
+    - TODO: default on record?
 - [ ] [Records and errors](https://avro.apache.org/docs/1.11.1/idl-language/#defining-records-and-errors)
     - [x] `Record`
     - [x] `RecordField`
@@ -31,14 +32,15 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
     - [x] `bytes` = [u8]
 - [Logical types](https://avro.apache.org/docs/1.11.1/idl-language/#logical-types)
     - [x] `uuid` -> valid uuid `string`
-    - [ ] `decimal` (logical type decimal)
+    - [x] `decimal` (logical type decimal)
     - [x] `date` (logical type date) -> `int`
     - [x] `time_ms` (logical type `time-millis`) -> `int`
-    - [ ] logical type `time-micros` -> `long`
+    - [x] `time-micros` by `@logicalType` -> `long`
     - [x] `timestamp_ms` (logical type `timestamp-millis`) -> `long`
-    - [ ] logical type `timestamp-micros` -> `long`
+    - [x] `timestamp-micros` by `@logicalType` -> `long`
     - [x] `duration` -> `fixed` type of size 12
         - TODO: Validations
+        - TODO: Improve parsing of default
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
     - [x] Arrays
         - [x] basic support

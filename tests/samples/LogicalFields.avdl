@@ -5,7 +5,10 @@ protocol MyProtocol {
         date birth = 123;
         uuid pk = "pepe";
         decimal(30,12) dec = "\u0000\u0000";
-        decimal(30,12) dec2 = 1.2;
+        // decimal(30,12) dec2 = 1.2;
+
+        @logicalType("timestamp-micros")
+        long finishTime;
     }
 }
 

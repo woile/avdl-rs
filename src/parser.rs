@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use apache_avro::schema::{Alias, Name, RecordFieldOrder};
-use apache_avro::types::Value as AvroValue;
 use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
 use crate::string_parser::parse_string as parse_string_uni;
+use apache_avro::schema::{Alias, Name, RecordFieldOrder};
+use apache_avro::types::Value as AvroValue;
 use nom::character::complete::space0;
 use nom::combinator::{map_opt, verify};
 use nom::multi::separated_list0;
@@ -502,8 +502,14 @@ pub fn parse_logical_field(
         Option<Value>,
     ),
 > {
-    let (tail, schema) = map_type_to_schema(input)?;
+    let (tail, logical_schema) =
+        opt(terminated(parse_logical_type, space_delimited(line_ending)))(input)?;
+    let (tail, schema) = map_type_to_schema(tail)?;
 
+    let schema = match logical_schema {
+        Some(s) => s,
+        None => schema,
+    };
     let boxed_schema = Box::new(schema.clone());
     let default_parser = parse_based_on_schema(boxed_schema);
     let (tail, (order, aliases, varname, defaults)) = terminated(
@@ -647,6 +653,55 @@ pub fn parse_map(
     ))
 }
 
+// Samples
+// ```
+// fixed MD5(16);
+// fixed @aliases(["md1"]) MD5(16);
+// ```
+pub fn parse_fixed(
+    input: &str,
+) -> IResult<
+    &str,
+    (
+        Schema,
+        Option<RecordFieldOrder>,
+        Option<Vec<Alias>>,
+        VarName,
+    ),
+> {
+    let (tail, (doc, (order, aliases, name, size))) = tuple((
+        space_delimited(opt(parse_doc)),
+        preceded(
+            tag("fixed"),
+            cut(terminated(
+                space_delimited(tuple((
+                    opt(space_delimited(parse_order)),
+                    opt(space_delimited(parse_aliases)),
+                    parse_var_name,
+                    delimited(tag("("), map_usize, tag(")")),
+                ))),
+                char(';'),
+            )),
+        ),
+    ))(input)?;
+
+    Ok((
+        tail,
+        (
+            Schema::Fixed {
+                name: name.into(),
+                aliases: aliases.clone(),
+                doc: doc,
+                size: size,
+                attributes: BTreeMap::new(),
+            },
+            order,
+            aliases,
+            name,
+        ),
+    ))
+}
+
 pub fn parse_union_default(input: &str) -> IResult<&str, &str> {
     // This should be take_until ";"
     preceded(space_delimited(tag("=")), take_until(";"))(input)
@@ -742,8 +797,8 @@ pub fn parse_union(
 // ```
 // /** This is a doc */
 // ```
-pub fn parse_doc(input: &str) -> IResult<&str, &str> {
-    delimited(tag("/**"), take_until("*/"), tag("*/"))(input)
+pub fn parse_doc(input: &str) -> IResult<&str, String> {
+    delimited(tag("/**"), map(take_until("*/"), String::from), tag("*/"))(input)
 }
 
 // Sample
@@ -751,7 +806,7 @@ pub fn parse_doc(input: &str) -> IResult<&str, &str> {
 // record TestRecord
 // ```
 fn parse_record_name(input: &str) -> IResult<&str, &str> {
-    preceded(tag("record"), space_delimited(alphanumeric1))(input)
+    preceded(tag("record"), space_delimited(parse_var_name))(input)
 }
 
 // parse according to the given schema
@@ -791,6 +846,9 @@ fn parse_based_on_schema<'r>(
             scale: _,
             inner: _,
         } => Box::new(map_bytes),
+        Schema::TimestampMicros => Box::new(map_long),
+        Schema::TimeMicros => Box::new(map_long),
+        Schema::Duration => todo!("This should be fixed"),
         _ => unimplemented!("Not implemented yet"),
     }
 }
@@ -843,7 +901,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 tuple((opt(space_delimited(parse_doc)), parse_string)),
                 |(doc, (order, aliases, name, default))| RecordField {
                     name: name.to_string(),
-                    doc: doc.map(String::from),
+                    doc: doc,
                     default: default,
                     schema: Schema::String,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
@@ -934,6 +992,19 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                     name: name.to_string(),
                     doc: None,
                     default: default,
+                    schema: schemas,
+                    order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+            ),
+            map(
+                parse_fixed,
+                |(schemas, order, aliases, name)| RecordField {
+                    name: name.to_string(),
+                    doc: None, // TODO: Fixed already has a doc, should it also be here?
+                    default: None,
                     schema: schemas,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
                     aliases: aliases,
@@ -1150,6 +1221,7 @@ mod test {
     #[case("time_ms   age   =   123 ;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(123.into()))))]
     #[case("timestamp_ms age;", (Schema::TimestampMillis, None, None, "age", None))]
     #[case("timestamp_ms age = 12;", (Schema::TimestampMillis, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case(r#"@logicalType("timestamp-micros")\nlong ts = 12;"#, (Schema::TimestampMicros, None, None, "ts", Some(Value::Number(12.into()))))]
     #[case("date age;", (Schema::Date, None, None, "age", None))]
     #[case("date age = 12;", (Schema::Date, None, None, "age", Some(Value::Number(12.into()))))]
     #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, "pk", Some(Value::String("a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8".into()))))]
@@ -1421,6 +1493,22 @@ mod test {
     }
 
     #[rstest]
+    #[case(r#"fixed MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}, None, None, "MD5"))]
+    #[case("/** my hash */ \nfixed MD5(16);", (Schema::Fixed { name: "MD5".into(), aliases: None, doc: Some("my hash".to_string()), size: 16, attributes: BTreeMap::new()}, None, None, "MD5"))]
+    #[case(r#"fixed @aliases(["md1"]) MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}, None, Some(vec![Alias::new("md1").unwrap()]), "MD5"))]
+    fn test_parse_fixed_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<RecordFieldOrder>,
+            Option<Vec<Alias>>,
+            VarName,
+        ),
+    ) {
+        assert_eq!(parse_fixed(input), Ok(("", expected)));
+    }
+
+    #[rstest]
     #[case(
         r#"union { null, string } item_id = null;"#, ((vec![Schema::Null, Schema::String], None, None,"item_id"), Some(Value::Null))
     )]
@@ -1482,7 +1570,7 @@ mod test {
         "/** Documentation for the enum type Kind */",
         " Documentation for the enum type Kind "
     )]
-    fn test_parse_doc(#[case] input: &str, #[case] expected: &str) {
+    fn test_parse_doc(#[case] input: &str, #[case] expected: String) {
         assert_eq!(parse_doc(input), Ok(("", expected)))
     }
 

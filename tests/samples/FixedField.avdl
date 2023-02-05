@@ -1,0 +1,8 @@
+protocol MyProtocol {
+
+    record FixedField {
+        fixed MD5(16);
+
+    }
+}
+
