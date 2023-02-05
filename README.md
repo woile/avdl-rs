@@ -36,9 +36,9 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
     - [x] `time_ms` (logical type `time-millis`) -> `int`
     - [ ] logical type `time-micros` -> `long`
     - [x] `timestamp_ms` (logical type `timestamp-millis`) -> `long`
-        - from the unix epoch, 1 January 1970 00:00:00.000 UTC
     - [ ] logical type `timestamp-micros` -> `long`
-        - from the unix epoch, 1 January 1970 00:00:00.000 UTC
+    - [x] `duration` -> `fixed` type of size 12
+        - TODO: Validations
 - [Complex types](https://avro.apache.org/docs/1.11.1/idl-language/#complex-types)
     - [x] Arrays
         - [x] basic support

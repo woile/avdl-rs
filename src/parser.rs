@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use apache_avro::schema::{Alias, Name, RecordFieldOrder};
-
+use apache_avro::types::Value as AvroValue;
 use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
 use crate::string_parser::parse_string as parse_string_uni;
 use nom::character::complete::space0;
@@ -104,7 +104,9 @@ fn parse_logical_type(i: &str) -> IResult<&str, Schema> {
             tag("("),
             map(parse_string_value, |s| match s {
                 "timestamp-micros" => Schema::TimestampMicros,
-                _ => unreachable!("ppe"),
+                "time-micros" => Schema::TimeMicros,
+                "duration" => Schema::Duration,
+                _ => todo!(),
             }),
             tag(")"),
         ),
@@ -343,6 +345,10 @@ pub fn parse_boolean(
             char(';'),
         )),
     )(input)
+}
+
+pub fn map_usize(input: &str) -> IResult<&str, usize> {
+    map_res(digit1, |v: &str| v.parse::<usize>())(input)
 }
 
 // Sample:
@@ -668,6 +674,20 @@ pub fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
         value(Schema::TimestampMillis, tag("timestamp_ms")),
         value(Schema::Date, tag("date")),
         value(Schema::Uuid, tag("uuid")),
+        map(
+            preceded(
+                tag("decimal"),
+                delimited(tag("("), pair(map_usize, map_usize), tag(")")),
+            ),
+            |(precision, scale)| {
+                // TODO: Review If inner should be float or calculated differently
+                Schema::Decimal {
+                    precision: precision,
+                    scale: scale,
+                    inner: Box::new(Schema::Bytes),
+                }
+            },
+        ),
     ))(input)
 }
 
@@ -766,6 +786,11 @@ fn parse_based_on_schema<'r>(
         Schema::TimeMillis => Box::new(map_int),
         Schema::TimestampMillis => Box::new(map_long),
         Schema::Uuid => Box::new(map_uuid),
+        Schema::Decimal {
+            precision: _,
+            scale: _,
+            inner: _,
+        } => Box::new(map_bytes),
         _ => unimplemented!("Not implemented yet"),
     }
 }

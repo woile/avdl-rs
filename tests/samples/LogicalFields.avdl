@@ -1,9 +1,11 @@
 protocol MyProtocol {
-    record SyntaxFields {
+    record LogicalFields {
         time_ms   elapsed   =   123 ;
         timestamp_ms when2 = 123;
         date birth = 123;
         uuid pk = "pepe";
+        decimal(30,12) dec = "\u0000\u0000";
+        decimal(30,12) dec2 = 1.2;
     }
 }
 
