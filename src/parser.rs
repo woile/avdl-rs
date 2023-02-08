@@ -4,7 +4,10 @@ use crate::schema::{RecordField, Schema, SchemaKind, UnionSchema};
 use crate::string_parser::parse_string as parse_string_uni;
 use apache_avro::schema::{Alias, Name, RecordFieldOrder};
 use apache_avro::types::Value as AvroValue;
-use nom::character::complete::space0;
+
+use nom::bytes::complete::take_till;
+use nom::character::complete::{not_line_ending, space0};
+use nom::character::is_newline;
 use nom::combinator::{map_opt, verify};
 use nom::multi::separated_list0;
 use nom::sequence::pair;
@@ -999,19 +1002,16 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                     custom_attributes: BTreeMap::new(),
                 },
             ),
-            map(
-                parse_fixed,
-                |(schemas, order, aliases, name)| RecordField {
-                    name: name.to_string(),
-                    doc: None, // TODO: Fixed already has a doc, should it also be here?
-                    default: None,
-                    schema: schemas,
-                    order: order.unwrap_or(RecordFieldOrder::Ascending),
-                    aliases: aliases,
-                    position: 0,
-                    custom_attributes: BTreeMap::new(),
-                },
-            ),
+            map(parse_fixed, |(schemas, order, aliases, name)| RecordField {
+                name: name.to_string(),
+                doc: None, // TODO: Fixed already has a doc, should it also be here?
+                default: None,
+                schema: schemas,
+                order: order.unwrap_or(RecordFieldOrder::Ascending),
+                aliases: aliases,
+                position: 0,
+                custom_attributes: BTreeMap::new(),
+            }),
         )),
     )(input)
 }
@@ -1063,6 +1063,31 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
             attributes: BTreeMap::new(),
         },
     ))
+}
+
+// Sample:
+// `// Hello\n`
+pub fn parse_comment_double_dash(input: &str) -> IResult<&str, &str> {
+    // preceded(tag("//"), map(take_till(|c| c == '\n'), |s: &str | s.trim_start()))(input)
+    delimited(
+        tag("//"),
+        map(take_till(|c| c == '\n'), |s: &str| s.trim()),
+        tag("\n"),
+    )(input)
+}
+
+// Sample:
+// `/* Hello */`
+pub fn parse_comment_dash_asterisk(input: &str) -> IResult<&str, &str> {
+    delimited(
+        tag("/*"),
+        map(take_until("*/"), |s: &str| s.trim()),
+        tag("*/"),
+    )(input)
+}
+
+pub fn parse_comment(input: &str) -> IResult<&str, &str> {
+    alt((parse_comment_double_dash, parse_comment_dash_asterisk))(input)
 }
 
 // Sample:
@@ -1765,5 +1790,33 @@ mod test {
             attributes: BTreeMap::new(),
         };
         assert_eq!(schema, expected);
+    }
+
+    #[rstest]
+    #[case("// holis\n", "holis")]
+    #[case(
+        "// TODO: Move to another place, etc.\n",
+        "TODO: Move to another place, etc."
+    )]
+    #[case("//Som343f\n", "Som343f")]
+    fn test_parse_comment_double_dash_ok(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(parse_comment_double_dash(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case("/* holis */", "holis")]
+    #[case(
+        "/* TODO: Move to another place, etc. */",
+        "TODO: Move to another place, etc."
+    )]
+    #[case("/*Som343f */", "Som343f")]
+    fn test_parse_comment_dash_asterisk_ok(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(parse_comment_dash_asterisk(input), Ok(("", expected)));
+    }
+    #[rstest]
+    #[case("/*Som343f */", "Som343f")]
+    #[case("//Som343f\n", "Som343f")]
+    fn test_parse_comment_ok(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(parse_comment(input), Ok(("", expected)));
     }
 }
