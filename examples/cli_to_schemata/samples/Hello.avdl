@@ -1,5 +1,0 @@
-protocol MyProtocol {
-    record Hello {
-        string @aliases(["nickname"]) name;
-    }
-}

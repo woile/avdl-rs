@@ -1,8 +1,8 @@
 protocol MyProtocol {
+    fixed IPv4(16);
 
     record FixedField {
-        fixed MD5(16);
-
+        IPv4 @aliases(["pepe"]) hash;
     }
 }
 

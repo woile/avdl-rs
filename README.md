@@ -2,10 +2,27 @@
 
 > Parse Avro AVDL files
 
-## Notes
+## CLI
 
-- `apache_avro::Schema` cannot be used to generate the avsc because `RecordField` is missing things like `aliases`. We have a reimplementation internally with some extras. I try to keep it as close as possible
-to the original, in case we can use it in the future. [AVRO-3709](https://issues.apache.org/jira/browse/AVRO-3709)
+To run avro-kit you can use
+
+```sh
+cargo run idl2schema
+```
+
+or build it
+
+```sh
+cargo build
+```
+
+### TODO
+
+- [ ] Dockerfile
+- [ ] Fake content based on schema
+- [ ] nix package
+- [ ] cli tests with insta
+- [ ] benchmarks
 
 ## Parsers
 
@@ -15,10 +32,13 @@ to the original, in case we can use it in the future. [AVRO-3709](https://issues
 - [x] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
     - TODO: default on record?
+    - [ ] Why is it not possible to set an `aliases` on a fixed?
 - [ ] [Records and errors](https://avro.apache.org/docs/1.11.1/idl-language/#defining-records-and-errors)
     - [x] `Record`
     - [x] `RecordField`
     - [ ] Error
+- [ ] RecordField
+    - Named schema's `aliases` are for the schema's `name` which might be namespaced. Record field's aliases are for the field's `name` which is not namespaced. The field's `type` might be a (namespaced) reference to Schema.[src](https://github.com/apache/avro/pull/2087#discussion_r1101061294)
 - [ ] [Protocol](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-protocol-in-avro-idl)
 - [Primitive types](https://avro.apache.org/docs/1.11.1/idl-language/#primitive-types)
     - [x] `string` = &str

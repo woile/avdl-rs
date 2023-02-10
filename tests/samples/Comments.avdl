@@ -1,0 +1,11 @@
+protocol MyProtocol {
+    record Comments {
+        string name; // holis
+        int age /* a comment */; // another TODO
+        /* I want to mention that ...
+        this is a multiline comment
+        ending here
+        */
+        float regex /*TODO: change name*/ = 1.2;
+    }
+}
