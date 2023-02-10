@@ -76,7 +76,7 @@ where
     delimited(multispace0, parser, multispace0)
 }
 
-fn space_delimited_or_comment<'a, Input: 'a, Output: 'a, Error: 'a>(
+fn comment_delimited<'a, Input: 'a, Output: 'a, Error: 'a>(
     parser: impl Parser<Input, Output, Error> + 'a,
 ) -> impl FnMut(Input) -> IResult<Input, Output, Error> + 'a
 where
@@ -94,9 +94,9 @@ where
     <Input as InputTakeAtPosition>::Item: PartialEq<char>,
 {
     delimited(
-        alt((multispace0, parse_comment)),
+        space_delimited(opt(parse_comment)),
         parser,
-        alt((multispace0, parse_comment)),
+        space_delimited(opt(parse_comment)),
     )
 }
 
@@ -420,7 +420,7 @@ pub fn parse_int(input: &str) -> IResult<&str, (Option<RecordFieldOrder>, VarNam
                     preceded(space_delimited(tag("=")), map_int),
                 )),
             ))),
-            char(';'),
+            comment_delimited(char(';')),
         )),
     )(input)
 }
@@ -478,21 +478,22 @@ pub fn map_float(input: &str) -> IResult<&str, Value> {
 // ```
 pub fn parse_float(
     input: &str,
-) -> IResult<&str, (Option<RecordFieldOrder>, VarName, Option<Value>)> {
-    preceded(
-        tag("float"),
-        cut(terminated(
-            space_delimited(tuple((
-                opt(space_delimited(parse_order)),
-                parse_var_name,
-                opt(context(
-                    "float default",
-                    preceded(space_delimited(tag("=")), map_float),
-                )),
-            ))),
-            char(';'),
-        )),
-    )(input)
+) -> IResult<&str, (Schema, Option<RecordFieldOrder>, Option<Vec<String>>, VarName, Option<Value>)> {
+    parse_logical_field(input)
+    // preceded(
+    //     tag("float"),
+    //     cut(terminated(
+    //         space_delimited(tuple((
+    //             opt(space_delimited(parse_order)),
+    //             parse_var_name,
+    //             opt(context(
+    //                 "float default",
+    //                 preceded(space_delimited(tag("=")), map_float),
+    //             )),
+    //         ))),
+    //         char(';'),
+    //     )),
+    // )(input)
 }
 
 // Sample:
@@ -557,13 +558,13 @@ pub fn parse_logical_field(
     let default_parser = parse_based_on_schema(boxed_schema);
     let (tail, (order, aliases, varname, defaults)) = terminated(
         tuple((
-            opt(space_delimited(parse_order)),
-            opt(space_delimited(parse_aliases)),
-            space_delimited(parse_var_name),
+            opt(comment_delimited(parse_order)),
+            opt(comment_delimited(parse_aliases)),
+            comment_delimited(parse_var_name),
             // default
-            opt(preceded(space_delimited(tag("=")), default_parser)),
+            opt(preceded(comment_delimited(tag("=")), default_parser)),
         )),
-        preceded(space0, tag(";")),
+        preceded(space0, comment_delimited(tag(";"))),
     )(tail)?;
 
     Ok((tail, (schema, order, aliases, varname, defaults)))
@@ -939,7 +940,7 @@ fn map_schema_to_value(value: &str, schema: SchemaKind) -> Value {
 fn parse_field(input: &str) -> IResult<&str, RecordField> {
     preceded(
         multispace0,
-        alt((
+        comment_delimited(alt((
             map(
                 tuple((opt(space_delimited(parse_doc)), parse_string)),
                 |(doc, (order, aliases, name, default))| RecordField {
@@ -983,16 +984,16 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
-            map(parse_float, |(order, name, default)| RecordField {
-                name: name.to_string(),
-                doc: None,
-                default: default,
-                schema: Schema::Float,
-                order: order.unwrap_or(RecordFieldOrder::Ascending),
-                aliases: None,
-                position: 0,
-                custom_attributes: BTreeMap::new(),
-            }),
+            // map(parse_float, |(order, name, default)| RecordField {
+            //     name: name.to_string(),
+            //     doc: None,
+            //     default: default,
+            //     schema: Schema::Float,
+            //     order: order.unwrap_or(RecordFieldOrder::Ascending),
+            //     aliases: None,
+            //     position: 0,
+            //     custom_attributes: BTreeMap::new(),
+            // }),
             map(parse_double, |(order, name, default)| RecordField {
                 name: name.to_string(),
                 doc: None,
@@ -1052,7 +1053,7 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
                 position: 0,
                 custom_attributes: BTreeMap::new(),
             }),
-        )),
+        ))),
     )(input)
 }
 
@@ -1352,18 +1353,18 @@ mod test {
     }
     //
     #[rstest]
-    #[case("float age;", (None, "age", None))]
-    #[case("float age = 12;", (None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
-    #[case("float age = 12.0;", (None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
-    #[case("float age = 0.0;", (None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("float age = .0;", (None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("float age = 0.1123;", (None, "age", Some(Value::Number(Number::from_f64(0.1123).unwrap()))))]
-    #[case("float age = 3.40282347e38;", (None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
-    #[case("float age = 0;", (None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("float   age   =   123 ;", (None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
+    #[case("float age;", (Schema::Float, None, None, "age", None))]
+    #[case("float age = 12;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("float age = 12.0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("float age = 0.0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float age = .0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float age = 0.1123;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.1123).unwrap()))))]
+    #[case("float age = 3.40282347e38;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
+    #[case("float age = 0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float   age   =   123 ;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
     fn test_parse_float_ok(
         #[case] input: &str,
-        #[case] expected: (Option<RecordFieldOrder>, &str, Option<Value>),
+        #[case] expected: (Schema, Option<RecordFieldOrder>, Option<Vec<String>>, VarName, Option<Value>),
     ) {
         assert_eq!(parse_float(input), Ok(("", expected)));
     }

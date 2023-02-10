@@ -1,7 +1,7 @@
 use apache_avro::Schema;
 use clap::{Parser, Subcommand};
 use std::path::{PathBuf, Path};
-use avdl_parser::parser::parse_protocol;
+use avdl_parser::parse_protocol;
 use std::fs;
 
 #[derive(Parser, Debug)]

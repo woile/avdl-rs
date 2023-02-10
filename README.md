@@ -72,7 +72,9 @@ cargo build
     - [x] `Enum`
 - [Comments](https://avro.apache.org/docs/1.11.1/idl-language/#comments)
     - [x] doc (`/** foo */`)
-    - [ ] comments
+    - [x] comments
+        - [ ] TODO: Move everything to use the field_parser
+        - [ ] TODO: Write more tests for comments
 
 
 ## Resources
