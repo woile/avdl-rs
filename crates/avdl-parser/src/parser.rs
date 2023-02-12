@@ -360,7 +360,62 @@ fn map_usize(input: &str) -> IResult<&str, usize> {
     map_res(digit1, |v: &str| v.parse::<usize>())(input)
 }
 
-// parse according to the given schema
+// Identify correct Schema
+fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
+    alt((
+        preceded(
+            tag("array"),
+            delimited(
+                tag("<"),
+                map(map_type_to_schema, |s| Schema::Array(Box::new(s))),
+                tag(">"),
+            ),
+        ),
+        map(
+            preceded(
+                tag("union"),
+                delimited(
+                    space_delimited(tag("{")),
+                    separated_list1(space_delimited(tag(",")), map_type_to_schema),
+                    space_delimited(tag("}")),
+                ),
+            ),
+            |union_schemas| {
+                Schema::Union(
+                    UnionSchema::new(union_schemas).expect("Failed to create union schema"),
+                )
+            },
+        ),
+        value(Schema::Null, tag("null")),
+        value(Schema::Boolean, tag("boolean")),
+        value(Schema::String, tag("string")),
+        value(Schema::Int, tag("int")),
+        value(Schema::Double, tag("double")),
+        value(Schema::Float, tag("float")),
+        value(Schema::Long, tag("long")),
+        value(Schema::Bytes, tag("bytes")),
+        value(Schema::TimeMillis, tag("time_ms")),
+        value(Schema::TimestampMillis, tag("timestamp_ms")),
+        value(Schema::Date, tag("date")),
+        value(Schema::Uuid, tag("uuid")),
+        map(
+            preceded(
+                tag("decimal"),
+                delimited(tag("("), pair(map_usize, map_usize), tag(")")),
+            ),
+            |(precision, scale)| {
+                // TODO: Review If inner should be float or calculated differently
+                Schema::Decimal {
+                    precision: precision,
+                    scale: scale,
+                    inner: Box::new(Schema::Bytes),
+                }
+            },
+        ),
+    ))(input)
+}
+
+// Identify default parser based on the given Schema
 fn parse_based_on_schema<'r>(
     schema: Box<Schema>,
 ) -> Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue>> {
@@ -388,10 +443,13 @@ fn parse_based_on_schema<'r>(
             }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue> + '_>
         }
         Schema::Union(union_schema) => {
-            let schemas = union_schema.variants();
-            let schema = schemas.first().expect("There should be at least 2 schemas in the union");
+            let schema = union_schema
+                .variants()
+                .first()
+                .expect("There should be at least 2 schemas in the union");
+
             parse_based_on_schema(Box::new(schema.clone()))
-        },
+        }
 
         // Logical Types
         Schema::Date => Box::new(map_int),
@@ -617,23 +675,18 @@ fn parse_union(
     Ok((tail, (schema, order, aliases, varname, defaults)))
 }
 
+/** ***************************************** */
+/**  Custom Types: Fixed, Records, etc        */
+/**  These types can be declared used fields  */
+/** ***************************************** */
+
 // Samples
 // ```
 // fixed MD5(16);
 // fixed @aliases(["md1"]) MD5(16);
 // ```
 // TODO: This should be parsed OUTSIDE of the recordfield
-fn parse_fixed(
-    input: &str,
-) -> IResult<
-    &str,
-    (
-        Schema,
-        Option<RecordFieldOrder>,
-        Option<Vec<Alias>>,
-        VarName,
-    ),
-> {
+fn parse_fixed(input: &str) -> IResult<&str, Schema> {
     let (tail, (doc, (order, aliases, name, size))) = tuple((
         space_delimited(opt(parse_doc)),
         preceded(
@@ -652,72 +705,14 @@ fn parse_fixed(
 
     Ok((
         tail,
-        (
-            Schema::Fixed {
-                name: name.into(),
-                aliases: aliases.clone(),
-                doc: doc,
-                size: size,
-                attributes: BTreeMap::new(),
-            },
-            order,
-            aliases,
-            name,
-        ),
+        Schema::Fixed {
+            name: name.into(),
+            aliases: aliases.clone(),
+            doc: doc,
+            size: size,
+            attributes: BTreeMap::new(),
+        },
     ))
-}
-
-fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
-    alt((
-        preceded(
-            tag("array"),
-            delimited(
-                tag("<"),
-                map(map_type_to_schema, |s| Schema::Array(Box::new(s))),
-                tag(">"),
-            ),
-        ),
-        map(
-            preceded(
-                tag("union"),
-                delimited(
-                    space_delimited(tag("{")),
-                    separated_list1(space_delimited(tag(",")), map_type_to_schema),
-                    space_delimited(tag("}")),
-                ),
-            ),
-            |union_schemas| {
-                Schema::Union(UnionSchema::new(union_schemas).expect("Failed to create union schema"))
-            },
-        ),
-        value(Schema::Null, tag("null")),
-        value(Schema::Boolean, tag("boolean")),
-        value(Schema::String, tag("string")),
-        value(Schema::Int, tag("int")),
-        value(Schema::Double, tag("double")),
-        value(Schema::Float, tag("float")),
-        value(Schema::Long, tag("long")),
-        value(Schema::Bytes, tag("bytes")),
-        value(Schema::TimeMillis, tag("time_ms")),
-        value(Schema::TimestampMillis, tag("timestamp_ms")),
-        value(Schema::Date, tag("date")),
-        value(Schema::Uuid, tag("uuid")),
-        map(
-            preceded(
-                tag("decimal"),
-                delimited(tag("("), pair(map_usize, map_usize), tag(")")),
-            ),
-            |(precision, scale)| {
-                // TODO: Review If inner should be float or calculated differently
-                Schema::Decimal {
-                    precision: precision,
-                    scale: scale,
-                    inner: Box::new(Schema::Bytes),
-                }
-            },
-        ),
-
-    ))(input)
 }
 
 // Sample
@@ -792,16 +787,6 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
                     position: 0,
                     custom_attributes: BTreeMap::new(),
                 }
-            }),
-            map(parse_fixed, |(schemas, order, aliases, name)| RecordField {
-                name: name.to_string(),
-                doc: None, // TODO: Fixed already has a doc, should it also be here?
-                default: None,
-                schema: schemas,
-                order: order.unwrap_or(RecordFieldOrder::Ascending),
-                aliases: None,
-                position: 0,
-                custom_attributes: BTreeMap::new(),
             }),
         ))),
     )(input)
@@ -888,7 +873,11 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
         ),
         delimited(
             space_delimited(tag("{")),
-            many1(comment_delimited(alt((parse_record, parse_enum)))),
+            many1(comment_delimited(alt((
+                parse_record,
+                parse_enum,
+                parse_fixed,
+            )))),
             preceded(multispace0, tag("}")),
         ),
     ))(input)?;
@@ -1321,18 +1310,10 @@ mod test {
     }
 
     #[rstest]
-    #[case(r#"fixed MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}, None, None, "MD5"))]
-    #[case("/** my hash */ \nfixed MD5(16);", (Schema::Fixed { name: "MD5".into(), aliases: None, doc: Some("my hash".to_string()), size: 16, attributes: BTreeMap::new()}, None, None, "MD5"))]
-    #[case(r#"fixed @aliases(["md1"]) MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}, None, Some(vec![Alias::new("md1").unwrap()]), "MD5"))]
-    fn test_parse_fixed_ok(
-        #[case] input: &str,
-        #[case] expected: (
-            Schema,
-            Option<RecordFieldOrder>,
-            Option<Vec<Alias>>,
-            VarName,
-        ),
-    ) {
+    #[case(r#"fixed MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}))]
+    #[case("/** my hash */ \nfixed MD5(16);", (Schema::Fixed { name: "MD5".into(), aliases: None, doc: Some("my hash".to_string()), size: 16, attributes: BTreeMap::new()}))]
+    #[case(r#"fixed @aliases(["md1"]) MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}))]
+    fn test_parse_fixed_ok(#[case] input: &str, #[case] expected: Schema) {
         assert_eq!(parse_fixed(input), Ok(("", expected)));
     }
 
