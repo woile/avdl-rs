@@ -33,37 +33,27 @@ use uuid::Uuid;
 type VarName<'a> = &'a str;
 type EnumSymbol<'a> = &'a str;
 
-// Samples:
-// ```
-// COIN
-// NUMBER
-// ```
-fn parse_enum_item(input: &str) -> IResult<&str, VarName> {
-    delimited(multispace0, parse_var_name, multispace0)(input)
-}
-
 // Sample:
-// ```
-// { COIN, NUMBER }
-// ```
-fn parse_enum_symbols(input: &str) -> IResult<&str, Vec<EnumSymbol>> {
-    delimited(
-        multispace0,
-        delimited(
-            tag("{"),
-            separated_list1(tag(","), parse_enum_item),
-            tag("}"),
-        ),
-        multispace0,
-    )(input)
-}
-
-// TODO: Review this
-// ```
-// enum Items
-// ```
-fn parse_enum_name(input: &str) -> IResult<&str, VarName> {
-    space_delimited(preceded(space_delimited(tag("enum")), parse_var_name))(input)
+// `/* Hello */`
+// `// Hello\n`
+fn parse_comment<'a, T, E>(input: T) -> IResult<T, T, E>
+where
+    E: nom::error::ParseError<T>,
+    T: InputTake
+        + InputTakeAtPosition
+        + std::clone::Clone
+        + nom::Compare<&'a str>
+        + nom::InputIter
+        + nom::InputLength
+        + nom::FindSubstring<&'a str>,
+    <T as InputTakeAtPosition>::Item: AsChar,
+    <T as InputTakeAtPosition>::Item: Clone,
+    <T as InputTakeAtPosition>::Item: PartialEq<char>,
+{
+    alt((
+        delimited(tag("/*"), take_until("*/"), tag("*/")),
+        delimited(tag("//"), take_till(|c| c == '\n'), tag("\n")),
+    ))(input)
 }
 
 fn space_delimited<Input, Output, Error>(
@@ -78,7 +68,7 @@ where
     delimited(multispace0, parser, multispace0)
 }
 
-fn comment_delimited<'a, Input: 'a, Output: 'a, Error: 'a>(
+fn space_or_comment_delimited<'a, Input: 'a, Output: 'a, Error: 'a>(
     parser: impl Parser<Input, Output, Error> + 'a,
 ) -> impl FnMut(Input) -> IResult<Input, Output, Error> + 'a
 where
@@ -102,38 +92,70 @@ where
     )
 }
 
+// Sample
+// ```
+// /** This is a doc */
+// ```
+fn parse_doc(input: &str) -> IResult<&str, String> {
+    delimited(tag("/**"), map(take_until("*/"), String::from), tag("*/"))(input)
+}
+
+// The name portion of the fullname of named types, record field names, and enum symbols must:
+//
+// - start with [A-Za-z_]
+// - subsequently contain only [A-Za-z0-9_]
+// https://avro.apache.org/docs/1.11.1/specification/#names
+fn parse_var_name(input: &str) -> IResult<&str, &str> {
+    verify(
+        take_while(|c| char::is_alphanumeric(c) || c == '_'),
+        |s: &str| s.chars().take(1).any(|c| char::is_alpha(c) || c == '_'),
+    )(input)
+}
+
+/** ***********  */
+/** Annotations  */
+/** ***********  */
+
 // Example:
 // ```
-// @aliases(["org.foo.KindOf"])
+// @aliases(["name"])
 // ```
 // TODO: Take into account spaces
 fn parse_aliases(i: &str) -> IResult<&str, Vec<String>> {
     preceded(
         tag("@aliases"),
         delimited(
-            tag("(["),
-            separated_list1(
-                space_delimited(tag(",")),
-                // delimited(multispace0, tag(","), multispace0),
-                // map_res(parse_namespace_value, |namespace| Alias::new(&namespace)),
-                parse_namespace_value,
+            space_or_comment_delimited(tag("(")),
+            delimited(
+                tag("["),
+                separated_list1(tag(","), space_or_comment_delimited(parse_namespace_value)),
+                space_or_comment_delimited(tag("]")),
             ),
-            tag("])"),
+            space_or_comment_delimited(tag(")")),
         ),
     )(i)
 }
 
-fn map_parse_aliases(i: &str) -> IResult<&str, Vec<Alias>> {
+// Example:
+// ```
+// @aliases(["org.foo.KindOf"])
+// ```
+fn parse_namespaced_aliases(i: &str) -> IResult<&str, Vec<Alias>> {
     preceded(
         tag("@aliases"),
         delimited(
-            tag("(["),
-            separated_list1(
-                space_delimited(tag(",")),
-                // delimited(multispace0, tag(","), multispace0),
-                map_res(parse_namespace_value, |namespace| Alias::new(&namespace)),
+            space_or_comment_delimited(tag("(")),
+            delimited(
+                tag("["),
+                separated_list1(
+                    tag(","),
+                    space_or_comment_delimited(map_res(parse_namespace_value, |namespace| {
+                        Alias::new(&namespace)
+                    })),
+                ),
+                space_or_comment_delimited(tag("]")),
             ),
-            tag("])"),
+            space_or_comment_delimited(tag(")")),
         ),
     )(i)
 }
@@ -156,7 +178,7 @@ fn parse_logical_type(i: &str) -> IResult<&str, Schema> {
                 "duration" => Schema::Duration,
                 _ => todo!(),
             }),
-            comment_delimited(tag(")")),
+            space_or_comment_delimited(tag(")")),
         ),
     )(i)
 }
@@ -167,18 +189,6 @@ fn parse_namespace_value(input: &str) -> IResult<&str, String> {
     map(delimited(char('"'), ns, char('"')), |s: &str| {
         String::from(s)
     })(input)
-}
-
-// The name portion of the fullname of named types, record field names, and enum symbols must:
-//
-// - start with [A-Za-z_]
-// - subsequently contain only [A-Za-z0-9_]
-// https://avro.apache.org/docs/1.11.1/specification/#names
-fn parse_var_name(input: &str) -> IResult<&str, &str> {
-    verify(
-        take_while(|c| char::is_alphanumeric(c) || c == '_'),
-        |s: &str| s.chars().take(1).any(|c| char::is_alpha(c) || c == '_'),
-    )(input)
 }
 
 // Example:
@@ -215,49 +225,6 @@ pub fn parse_order(input: &str) -> IResult<&str, RecordFieldOrder> {
             preceded(multispace0, tag(")")),
         ),
     )(input)
-}
-// Sample:
-// ```
-// = COIN;
-// ```
-fn parse_enum_default(input: &str) -> IResult<&str, String> {
-    terminated(
-        preceded(
-            space_delimited(tag("=")),
-            map(parse_enum_item, |value| value.to_string()),
-        ),
-        tag(";"),
-    )(input)
-}
-
-// Sample:
-// ```
-// enum Items { COIN, NUMBER } = COIN;
-// ```
-fn parse_enum(input: &str) -> IResult<&str, Schema> {
-    let (tail, (aliases, name, body, default)) = tuple((
-        opt(map_parse_aliases),
-        parse_enum_name,
-        parse_enum_symbols,
-        opt(parse_enum_default),
-    ))(input)?;
-    let n = Name::new(name).unwrap();
-
-    // TODO: Check if we need to validate enum's default against one of the options
-    if default.is_some() {
-        println!("Warning: default is being ignored as of now.")
-    }
-
-    Ok((
-        tail,
-        Schema::Enum {
-            name: n,
-            aliases: aliases,
-            doc: None,
-            symbols: body.into_iter().map(String::from).collect::<Vec<String>>(),
-            attributes: BTreeMap::new(),
-        },
-    ))
 }
 
 /** ***************************** */
@@ -488,7 +455,7 @@ fn parse_field(
         Option<Value>,
     ),
 > {
-    let (tail, logical_schema) = opt(comment_delimited(parse_logical_type))(input)?;
+    let (tail, logical_schema) = opt(space_or_comment_delimited(parse_logical_type))(input)?;
     // opt(terminated(parse_logical_type, space_delimited(line_ending)))(input)?;
     let (tail, schema) = map_type_to_schema(tail)?;
 
@@ -502,17 +469,17 @@ fn parse_field(
     let (tail, ((order, aliases), varname, defaults)) = terminated(
         tuple((
             permutation_opt((
-                comment_delimited(parse_order),
-                comment_delimited(parse_aliases),
+                space_or_comment_delimited(parse_order),
+                space_or_comment_delimited(parse_aliases),
             )),
-            comment_delimited(parse_var_name),
+            space_or_comment_delimited(parse_var_name),
             // default
             opt(preceded(
-                comment_delimited(tag("=")),
+                space_or_comment_delimited(tag("=")),
                 map_res(default_parser, |value| value.try_into()),
             )),
         )),
-        preceded(space0, comment_delimited(tag(";"))),
+        preceded(space0, space_or_comment_delimited(tag(";"))),
     )(tail)?;
 
     Ok((tail, (schema, order, aliases, varname, defaults)))
@@ -659,26 +626,99 @@ fn parse_union(
     let (tail, ((order, aliases), varname, defaults)) = terminated(
         tuple((
             permutation_opt((
-                comment_delimited(parse_order),
-                comment_delimited(parse_aliases),
+                space_or_comment_delimited(parse_order),
+                space_or_comment_delimited(parse_aliases),
             )),
-            comment_delimited(parse_var_name),
+            space_or_comment_delimited(parse_var_name),
             // default
             opt(preceded(
-                comment_delimited(tag("=")),
+                space_or_comment_delimited(tag("=")),
                 map_res(default_parser, |value| value.try_into()),
             )),
         )),
-        preceded(space0, comment_delimited(tag(";"))),
+        preceded(space0, space_or_comment_delimited(tag(";"))),
     )(tail)?;
 
     Ok((tail, (schema, order, aliases, varname, defaults)))
 }
 
-/** ***************************************** */
-/**  Custom Types: Fixed, Records, etc        */
-/**  These types can be declared used fields  */
-/** ***************************************** */
+/** **************************************** */
+/**  Custom Types: Fixed, Records, Enum, etc */
+/**  These types can be declared used fields */
+/** **************************************** */
+
+// Samples:
+// ```
+// COIN
+// NUMBER
+// ```
+fn parse_enum_item(input: &str) -> IResult<&str, VarName> {
+    space_or_comment_delimited(parse_var_name)(input)
+}
+
+// Sample:
+// ```
+// { COIN, NUMBER }
+// ```
+fn parse_enum_symbols(input: &str) -> IResult<&str, Vec<EnumSymbol>> {
+    delimited(
+        space_or_comment_delimited(tag("{")),
+        separated_list1(tag(","), parse_enum_item),
+        space_or_comment_delimited(tag("}")),
+    )(input)
+}
+
+// TODO: Review this
+// ```
+// enum Items
+// ```
+fn parse_enum_name(input: &str) -> IResult<&str, VarName> {
+    space_delimited(preceded(space_delimited(tag("enum")), parse_enum_item))(input)
+}
+
+// Sample:
+// ```
+// = COIN;
+// ```
+fn parse_enum_default(input: &str) -> IResult<&str, String> {
+    terminated(
+        preceded(
+            space_delimited(tag("=")),
+            map(parse_enum_item, |value| value.to_string()),
+        ),
+        tag(";"),
+    )(input)
+}
+
+// Sample:
+// ```
+// enum Items { COIN, NUMBER } = COIN;
+// ```
+fn parse_enum(input: &str) -> IResult<&str, Schema> {
+    let (tail, (aliases, name, body, default)) = tuple((
+        opt(parse_namespaced_aliases),
+        parse_enum_name,
+        parse_enum_symbols,
+        opt(parse_enum_default),
+    ))(input)?;
+    let n = Name::new(name).unwrap();
+
+    // TODO: Check if we need to validate enum's default against one of the options
+    if default.is_some() {
+        println!("Warning: default is being ignored as of now.")
+    }
+
+    Ok((
+        tail,
+        Schema::Enum {
+            name: n,
+            aliases: aliases,
+            doc: None,
+            symbols: body.into_iter().map(String::from).collect::<Vec<String>>(),
+            attributes: BTreeMap::new(),
+        },
+    ))
+}
 
 // Samples
 // ```
@@ -694,7 +734,7 @@ fn parse_fixed(input: &str) -> IResult<&str, Schema> {
             cut(terminated(
                 space_delimited(tuple((
                     opt(space_delimited(parse_order)),
-                    opt(space_delimited(map_parse_aliases)),
+                    opt(space_delimited(parse_namespaced_aliases)),
                     parse_var_name,
                     delimited(tag("("), map_usize, tag(")")),
                 ))),
@@ -717,14 +757,6 @@ fn parse_fixed(input: &str) -> IResult<&str, Schema> {
 
 // Sample
 // ```
-// /** This is a doc */
-// ```
-fn parse_doc(input: &str) -> IResult<&str, String> {
-    delimited(tag("/**"), map(take_until("*/"), String::from), tag("*/"))(input)
-}
-
-// Sample
-// ```
 // record TestRecord
 // ```
 fn parse_record_name(input: &str) -> IResult<&str, &str> {
@@ -739,7 +771,7 @@ fn parse_record_name(input: &str) -> IResult<&str, &str> {
 fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
     preceded(
         multispace0,
-        comment_delimited(alt((
+        space_or_comment_delimited(alt((
             map(parse_union, |(schema, order, aliases, name, default)| {
                 RecordField {
                     name: name.to_string(),
@@ -803,8 +835,8 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
 pub fn parse_record(input: &str) -> IResult<&str, Schema> {
     let (tail, ((aliases, namespace), name, fields)) = tuple((
         permutation_opt((
-            comment_delimited(map_parse_aliases),
-            comment_delimited(parse_namespace),
+            space_or_comment_delimited(parse_namespaced_aliases),
+            space_or_comment_delimited(parse_namespace),
         )),
         preceded(multispace0, parse_record_name),
         preceded(
@@ -834,29 +866,6 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
 }
 
 // Sample:
-// `/* Hello */`
-// `// Hello\n`
-fn parse_comment<'a, T, E>(input: T) -> IResult<T, T, E>
-where
-    E: nom::error::ParseError<T>,
-    T: InputTake
-        + InputTakeAtPosition
-        + std::clone::Clone
-        + nom::Compare<&'a str>
-        + nom::InputIter
-        + nom::InputLength
-        + nom::FindSubstring<&'a str>,
-    <T as InputTakeAtPosition>::Item: AsChar,
-    <T as InputTakeAtPosition>::Item: Clone,
-    <T as InputTakeAtPosition>::Item: PartialEq<char>,
-{
-    alt((
-        delimited(tag("/*"), take_until("*/"), tag("*/")),
-        delimited(tag("//"), take_till(|c| c == '\n'), tag("\n")),
-    ))(input)
-}
-
-// Sample:
 // ```
 // protocol Simple {
 //    record Simple {
@@ -873,7 +882,7 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
         ),
         delimited(
             space_delimited(tag("{")),
-            many1(comment_delimited(alt((
+            many1(space_or_comment_delimited(alt((
                 parse_record,
                 parse_enum,
                 parse_fixed,
@@ -1153,19 +1162,14 @@ mod test {
         }
     }
 
-    #[test]
-    fn test_enum_body() {
-        let bodies = [
-            "{ SQUARE, TRIANGLE, CIRCLE, OVAL }",
-            "{SQUARE,TRIANGLE, CIRCLE,OVAL }",
-            "{ SQUARE,TRIANGLE,CIRCLE,OVAL}",
-            "{SQUARE,TRIANGLE,CIRCLE,OVAL}",
-        ];
+    #[rstest]
+    #[case("{ SQUARE, TRIANGLE, CIRCLE, OVAL }")]
+    #[case("{SQUARE,TRIANGLE, CIRCLE,OVAL }")]
+    #[case("{ SQUARE,TRIANGLE,CIRCLE,OVAL}")]
+    #[case("{SQUARE,TRIANGLE,CIRCLE,OVAL}")]
+    fn test_enum_body(#[case] input: &str) {
         let expected = vec!["SQUARE", "TRIANGLE", "CIRCLE", "OVAL"];
-        for body in bodies {
-            let out = parse_enum_symbols(body);
-            assert_eq!(out, Ok(("", expected.clone())))
-        }
+        assert_eq!(parse_enum_symbols(input), Ok(("", expected)))
     }
 
     #[test]
@@ -1240,11 +1244,20 @@ mod test {
     }
 
     #[rstest]
+    #[case(r#"@aliases(["oldField", "ancientField"])"#, vec![String::from("oldField"), String::from("ancientField")])]
+    #[case(r#"@aliases ( [ "oldField", "ancientField" ] )"#, vec![String::from("oldField"), String::from("ancientField")])]
+    #[case(r#"@aliases ( [ "oldField", /* holis */ "ancientField" ] )"#, vec![String::from("oldField"), String::from("ancientField")])]
+    #[case("@aliases ( [ \"oldField\" // \"ancientField\" \n ] )", vec![String::from("oldField")])]
+    fn test_alias(#[case] input: &str, #[case] expected: Vec<String>) {
+        assert_eq!(parse_aliases(input), Ok(("", expected)));
+    }
+
+    #[rstest]
     #[case(r#"@aliases(["oldField", "ancientField"])"#, vec![Alias::new("oldField").unwrap(), Alias::new("ancientField").unwrap()])]
     #[case(r#"@aliases(["oldField","ancientField"])"#, vec![Alias::new("oldField").unwrap(), Alias::new("ancientField").unwrap()])]
     #[case(r#"@aliases(["org.old.OldRecord","org.ancient.AncientRecord"])"#, vec![Alias::new("org.old.OldRecord").unwrap(), Alias::new("org.ancient.AncientRecord").unwrap()])]
-    fn test_alias(#[case] input: &str, #[case] expected: Vec<Alias>) {
-        assert_eq!(map_parse_aliases(input), Ok(("", expected)));
+    fn test_namespaced_alias(#[case] input: &str, #[case] expected: Vec<Alias>) {
+        assert_eq!(parse_namespaced_aliases(input), Ok(("", expected)));
     }
 
     #[rstest]

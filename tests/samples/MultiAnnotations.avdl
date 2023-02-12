@@ -1,6 +1,12 @@
 protocol MyProtocol {
 
-    @aliases(["org.old.OldRecord", "org.ancient.AncientRecord"])
+    @aliases
+    (
+        [
+        "org.old.OldRecord", // comment
+        "org.ancient.AncientRecord"
+    ]
+    )
     @namespace("org.apache.avro.firstNamespace")
     record MultiAnnotations {
         @java-key-class("java.io.File")
