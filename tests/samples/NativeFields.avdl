@@ -1,0 +1,11 @@
+protocol MyProtocol {
+    enum Items { COIN, NUMBER } = COIN;
+    record NativeFields {
+        string @order("ignore") name = "holis";
+        bytes message = "holis";
+        boolean   active   =   false ;
+        float age = 20;
+        double amount = 20.0;
+        Items pepe;
+    }
+}
