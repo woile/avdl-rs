@@ -172,7 +172,6 @@ fn parse_logical_type(i: &str) -> IResult<&str, Schema> {
             tag("("),
             map(parse_string_uni, |s| match s.as_str() {
                 "timestamp-micros" => {
-                    println!("MATHCES");
                     return Schema::TimestampMicros;
                 }
                 "time-micros" => Schema::TimeMicros,
@@ -229,7 +228,7 @@ pub fn parse_order(input: &str) -> IResult<&str, RecordFieldOrder> {
 }
 
 /** ***************************** */
-/** Map Native and logical types  */
+/** Map Native and Logical Types  */
 /** ***************************** */
 
 // Sample
@@ -279,7 +278,6 @@ fn map_bool(input: &str) -> IResult<&str, AvroValue> {
 fn map_int(input: &str) -> IResult<&str, AvroValue> {
     map(map_res(digit1, |v: &str| v.parse::<i32>()), |v| {
         AvroValue::Int(v)
-        // Value::Number(v.into())
     })(input)
 }
 
@@ -290,7 +288,6 @@ fn map_int(input: &str) -> IResult<&str, AvroValue> {
 fn map_long(input: &str) -> IResult<&str, AvroValue> {
     map(map_res(digit1, |v: &str| v.parse::<i64>()), |v| {
         AvroValue::Long(v)
-        // Value::Number(v.into())
     })(input)
 }
 
@@ -319,7 +316,6 @@ fn map_double(input: &str) -> IResult<&str, AvroValue> {
             |v: &str| v.parse::<f64>(),
         ),
         |v| AvroValue::Double(v),
-        // Some(Value::Number(Number::from_f64(v)?)),
     )(input)
 }
 
@@ -402,20 +398,17 @@ fn parse_based_on_schema<'r>(
         Schema::Double => Box::new(map_double),
         Schema::Bytes => Box::new(map_bytes),
         Schema::String => Box::new(map_string),
-        Schema::Array(schema) => {
-            // let schema = *schema;
-            // let array_parser = parse_based_on_schema(&schema);
-            Box::new(move |input: &'r str| {
-                delimited(
-                    tag("["),
-                    map(
-                        separated_list0(tag(","), parse_based_on_schema(schema.clone())),
-                        |s| AvroValue::Array(s),
-                    ),
-                    tag("]"),
-                )(input)
-            }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue> + '_>
-        }
+        Schema::Array(schema) => Box::new(move |input: &'r str| {
+            delimited(
+                tag("["),
+                map(
+                    separated_list0(tag(","), parse_based_on_schema(schema.clone())),
+                    |s| AvroValue::Array(s),
+                ),
+                tag("]"),
+            )(input)
+        })
+            as Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue> + '_>,
         Schema::Union(union_schema) => {
             let schema = union_schema
                 .variants()
@@ -465,7 +458,6 @@ fn parse_field(
 > {
     let (tail, doc) = opt(parse_doc)(input)?;
     let (tail, logical_schema) = opt(space_or_comment_delimited(parse_logical_type))(tail)?;
-    // opt(terminated(parse_logical_type, space_delimited(line_ending)))(input)?;
     let (tail, schema) = map_type_to_schema(tail)?;
 
     let schema = match logical_schema {
@@ -927,7 +919,6 @@ mod test {
     use std::collections::BTreeMap;
 
     use super::*;
-    // use crate::schema::{RecordField, Schema};
     use apache_avro::schema::{Alias, Name, RecordField, RecordFieldOrder, Schema};
     use rstest::rstest;
     use serde_json::{Map, Number, Value};
