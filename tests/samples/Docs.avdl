@@ -1,0 +1,18 @@
+/**
+ * An example protocol in Avro IDL
+ */
+@namespace("org.apache.avro.test")
+protocol MyProtocol {
+
+    /** name doc doc */
+    @aliases(["nameOf"])
+    @namespace("pepe")
+    record Docs {
+        /** name doc doc */
+        string @aliases(["nameOf"]) name;
+
+        int age;
+        /** float doc */
+        float regex = 1.2;
+    }
+}

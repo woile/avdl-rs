@@ -1,4 +1,6 @@
 protocol MyProtocol {
+    /** holis */
+    // pepe
     record Comments {
         string name; // holis
         int age /* a comment */; // another TODO

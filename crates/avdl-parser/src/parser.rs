@@ -2,36 +2,33 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::string_parser::parse_string as parse_string_uni;
 use apache_avro::schema::{Alias, Name, RecordFieldOrder};
-use apache_avro::schema::{RecordField, Schema, SchemaKind, UnionSchema};
+use apache_avro::schema::{RecordField, Schema, UnionSchema};
 use apache_avro::types::Value as AvroValue;
 use nom::bytes::complete::take_till;
 use nom::character::complete::space0;
 
-use nom::combinator::{map_opt, verify};
+use nom::combinator::verify;
 
 use nom::multi::separated_list0;
 use nom::sequence::pair;
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, tag, take_until, take_while, take_while1},
-    character::{
-        complete::{alphanumeric0, alphanumeric1, char, digit1, multispace0},
-        streaming::one_of,
-    },
+    bytes::complete::{tag, take_until, take_while, take_while1},
+    character::complete::{alphanumeric1, char, digit1, multispace0},
     combinator::{cut, map, map_res, opt, value},
-    error::context,
     multi::{many1, separated_list1},
     sequence::{delimited, preceded, terminated, tuple},
     AsChar, IResult, InputTake, InputTakeAtPosition, Parser,
 };
 use nom_permutation::permutation_opt;
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
 use std::str::FromStr;
 use uuid::Uuid;
 
 // Alias to give more clarity on what is being returned
 type VarName<'a> = &'a str;
 type EnumSymbol<'a> = &'a str;
+type Doc = String;
 
 // Sample:
 // `/* Hello */`
@@ -96,8 +93,12 @@ where
 // ```
 // /** This is a doc */
 // ```
-fn parse_doc(input: &str) -> IResult<&str, String> {
-    delimited(tag("/**"), map(take_until("*/"), String::from), tag("*/"))(input)
+fn parse_doc(input: &str) -> IResult<&str, Doc> {
+    delimited(
+        tag("/**"),
+        map(take_until("*/"), |v: &str| String::from(v.trim())),
+        tag("*/"),
+    )(input)
 }
 
 // The name portion of the fullname of named types, record field names, and enum symbols must:
@@ -340,7 +341,7 @@ fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
         ),
         map(
             preceded(
-                tag("union"),
+                space_or_comment_delimited(tag("union")),
                 delimited(
                     space_delimited(tag("{")),
                     separated_list1(space_delimited(tag(",")), map_type_to_schema),
@@ -353,21 +354,27 @@ fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
                 )
             },
         ),
-        value(Schema::Null, tag("null")),
-        value(Schema::Boolean, tag("boolean")),
-        value(Schema::String, tag("string")),
-        value(Schema::Int, tag("int")),
-        value(Schema::Double, tag("double")),
-        value(Schema::Float, tag("float")),
-        value(Schema::Long, tag("long")),
-        value(Schema::Bytes, tag("bytes")),
-        value(Schema::TimeMillis, tag("time_ms")),
-        value(Schema::TimestampMillis, tag("timestamp_ms")),
-        value(Schema::Date, tag("date")),
-        value(Schema::Uuid, tag("uuid")),
+        value(Schema::Null, space_or_comment_delimited(tag("null"))),
+        value(Schema::Boolean, space_or_comment_delimited(tag("boolean"))),
+        value(Schema::String, space_or_comment_delimited(tag("string"))),
+        value(Schema::Int, space_or_comment_delimited(tag("int"))),
+        value(Schema::Double, space_or_comment_delimited(tag("double"))),
+        value(Schema::Float, space_or_comment_delimited(tag("float"))),
+        value(Schema::Long, space_or_comment_delimited(tag("long"))),
+        value(Schema::Bytes, space_or_comment_delimited(tag("bytes"))),
+        value(
+            Schema::TimeMillis,
+            space_or_comment_delimited(tag("time_ms")),
+        ),
+        value(
+            Schema::TimestampMillis,
+            space_or_comment_delimited(tag("timestamp_ms")),
+        ),
+        value(Schema::Date, space_or_comment_delimited(tag("date"))),
+        value(Schema::Uuid, space_or_comment_delimited(tag("uuid"))),
         map(
             preceded(
-                tag("decimal"),
+                space_or_comment_delimited(tag("decimal")),
                 delimited(tag("("), pair(map_usize, map_usize), tag(")")),
             ),
             |(precision, scale)| {
@@ -449,13 +456,15 @@ fn parse_field(
     &str,
     (
         Schema,
+        Option<Doc>,
         Option<RecordFieldOrder>,
         Option<Vec<String>>,
         VarName,
         Option<Value>,
     ),
 > {
-    let (tail, logical_schema) = opt(space_or_comment_delimited(parse_logical_type))(input)?;
+    let (tail, doc) = opt(parse_doc)(input)?;
+    let (tail, logical_schema) = opt(space_or_comment_delimited(parse_logical_type))(tail)?;
     // opt(terminated(parse_logical_type, space_delimited(line_ending)))(input)?;
     let (tail, schema) = map_type_to_schema(tail)?;
 
@@ -482,7 +491,7 @@ fn parse_field(
         preceded(space0, space_or_comment_delimited(tag(";"))),
     )(tail)?;
 
-    Ok((tail, (schema, order, aliases, varname, defaults)))
+    Ok((tail, (schema, doc, order, aliases, varname, defaults)))
 }
 
 /** ***************  */
@@ -500,22 +509,26 @@ fn parse_array(
     &str,
     (
         Schema,
+        Option<Doc>,
         Option<RecordFieldOrder>,
         Option<Vec<String>>,
         VarName,
         Option<Value>,
     ),
 > {
+    let (tail, doc) = opt(parse_doc)(input)?;
     let (tail, schema_array_type) = preceded(
-        tag("array"),
+        space_or_comment_delimited(tag("array")),
         delimited(tag("<"), map_type_to_schema, tag(">")),
-    )(input)?;
+    )(tail)?;
     let schema = Box::new(schema_array_type.clone());
     let array_default_parser = parse_based_on_schema(schema);
-    let (tail, (order, aliases, varname, defaults)) = terminated(
+    let (tail, ((order, aliases), varname, defaults)) = terminated(
         tuple((
-            opt(space_delimited(parse_order)),
-            opt(space_delimited(parse_aliases)),
+            permutation_opt((
+                space_or_comment_delimited(parse_order),
+                space_or_comment_delimited(parse_aliases),
+            )),
             space_delimited(parse_var_name),
             // default
             opt(preceded(
@@ -538,6 +551,7 @@ fn parse_array(
         tail,
         (
             Schema::Array(Box::new(schema_array_type)),
+            doc,
             order,
             aliases,
             varname,
@@ -556,22 +570,26 @@ fn parse_map(
     &str,
     (
         Schema,
+        Option<Doc>,
         Option<RecordFieldOrder>,
         Option<Vec<String>>,
         VarName,
         Option<Value>,
     ),
 > {
+    let (tail, doc) = opt(parse_doc)(input)?;
     let (tail, schema) = preceded(
-        tag("map"),
+        space_or_comment_delimited(tag("map")),
         delimited(tag("<"), map_type_to_schema, tag(">")),
-    )(input)?;
+    )(tail)?;
     let schema_for_parser = Box::new(schema.clone());
     let map_default_parser = parse_based_on_schema(schema_for_parser);
-    let (tail, (order, aliases, varname, defaults)) = terminated(
+    let (tail, ((order, aliases), varname, defaults)) = terminated(
         tuple((
-            opt(space_delimited(parse_order)),
-            opt(space_delimited(parse_aliases)),
+            permutation_opt((
+                space_or_comment_delimited(parse_order),
+                space_or_comment_delimited(parse_aliases),
+            )),
             space_delimited(parse_var_name),
             // default
             opt(preceded(
@@ -599,6 +617,7 @@ fn parse_map(
         tail,
         (
             Schema::Map(Box::new(schema)),
+            doc,
             order,
             aliases,
             varname,
@@ -613,13 +632,15 @@ fn parse_union(
     &str,
     (
         Schema,
+        Option<String>,
         Option<RecordFieldOrder>,
         Option<Vec<String>>,
         VarName,
         Option<Value>,
     ),
 > {
-    let (tail, schema) = map_type_to_schema(input)?;
+    let (tail, doc) = opt(parse_doc)(input)?;
+    let (tail, schema) = map_type_to_schema(tail)?;
 
     let boxed_schema = Box::new(schema.clone());
     let default_parser = parse_based_on_schema(boxed_schema);
@@ -639,7 +660,7 @@ fn parse_union(
         preceded(space0, space_or_comment_delimited(tag(";"))),
     )(tail)?;
 
-    Ok((tail, (schema, order, aliases, varname, defaults)))
+    Ok((tail, (schema, doc, order, aliases, varname, defaults)))
 }
 
 /** **************************************** */
@@ -695,7 +716,8 @@ fn parse_enum_default(input: &str) -> IResult<&str, String> {
 // enum Items { COIN, NUMBER } = COIN;
 // ```
 fn parse_enum(input: &str) -> IResult<&str, Schema> {
-    let (tail, (aliases, name, body, default)) = tuple((
+    let (tail, (doc, aliases, name, body, default)) = tuple((
+        opt(parse_doc),
         opt(parse_namespaced_aliases),
         parse_enum_name,
         parse_enum_symbols,
@@ -713,7 +735,7 @@ fn parse_enum(input: &str) -> IResult<&str, Schema> {
         Schema::Enum {
             name: n,
             aliases: aliases,
-            doc: None,
+            doc: doc,
             symbols: body.into_iter().map(String::from).collect::<Vec<String>>(),
             attributes: BTreeMap::new(),
         },
@@ -725,15 +747,13 @@ fn parse_enum(input: &str) -> IResult<&str, Schema> {
 // fixed MD5(16);
 // fixed @aliases(["md1"]) MD5(16);
 // ```
-// TODO: This should be parsed OUTSIDE of the recordfield
 fn parse_fixed(input: &str) -> IResult<&str, Schema> {
-    let (tail, (doc, (order, aliases, name, size))) = tuple((
+    let (tail, (doc, (aliases, name, size))) = tuple((
         space_delimited(opt(parse_doc)),
         preceded(
             tag("fixed"),
             cut(terminated(
                 space_delimited(tuple((
-                    opt(space_delimited(parse_order)),
                     opt(space_delimited(parse_namespaced_aliases)),
                     parse_var_name,
                     delimited(tag("("), map_usize, tag(")")),
@@ -772,54 +792,58 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
     preceded(
         multispace0,
         space_or_comment_delimited(alt((
-            map(parse_union, |(schema, order, aliases, name, default)| {
-                RecordField {
+            map(
+                parse_array,
+                |(schemas, doc, order, aliases, name, default)| RecordField {
                     name: name.to_string(),
-                    doc: None,
+                    doc: doc,
+                    default: default,
+                    schema: schemas,
+                    order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+            ),
+            map(
+                parse_map,
+                |(schemas, doc, order, aliases, name, default)| RecordField {
+                    name: name.to_string(),
+                    doc: doc,
+                    default: default,
+                    schema: schemas,
+                    order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                },
+            ),
+            map(
+                parse_union,
+                |(schema, doc, order, aliases, name, default)| RecordField {
+                    name: name.to_string(),
+                    doc: doc,
                     default: default,
                     schema: schema,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
                     aliases: aliases,
                     position: 0,
                     custom_attributes: BTreeMap::new(),
-                }
-            }),
-            map(parse_map, |(schemas, order, aliases, name, default)| {
-                RecordField {
+                },
+            ),
+            map(
+                parse_field,
+                |(schemas, doc, order, aliases, name, default)| RecordField {
                     name: name.to_string(),
-                    doc: None,
+                    doc: doc,
                     default: default,
                     schema: schemas,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
                     aliases: aliases,
                     position: 0,
                     custom_attributes: BTreeMap::new(),
-                }
-            }),
-            map(parse_array, |(schemas, order, aliases, name, default)| {
-                RecordField {
-                    name: name.to_string(),
-                    doc: None,
-                    default: default,
-                    schema: schemas,
-                    order: order.unwrap_or(RecordFieldOrder::Ascending),
-                    aliases: aliases,
-                    position: 0,
-                    custom_attributes: BTreeMap::new(),
-                }
-            }),
-            map(parse_field, |(schemas, order, aliases, name, default)| {
-                RecordField {
-                    name: name.to_string(),
-                    doc: None,
-                    default: default,
-                    schema: schemas,
-                    order: order.unwrap_or(RecordFieldOrder::Ascending),
-                    aliases: aliases,
-                    position: 0,
-                    custom_attributes: BTreeMap::new(),
-                }
-            }),
+                },
+            ),
         ))),
     )(input)
 }
@@ -833,7 +857,8 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
 // }
 // ```
 pub fn parse_record(input: &str) -> IResult<&str, Schema> {
-    let (tail, ((aliases, namespace), name, fields)) = tuple((
+    let (tail, (doc, (aliases, namespace), name, fields)) = tuple((
+        opt(parse_doc),
         permutation_opt((
             space_or_comment_delimited(parse_namespaced_aliases),
             space_or_comment_delimited(parse_namespace),
@@ -857,7 +882,7 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
         Schema::Record {
             name: name,
             aliases: aliases,
-            doc: None,
+            doc: doc,
             fields: fields,
             lookup: BTreeMap::new(),
             attributes: BTreeMap::new(),
@@ -875,10 +900,14 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
 // }
 // ```
 pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
-    let (tail, (_name, schema)) = tuple((
+    let (tail, (_doc, _name, schema)) = tuple((
+        opt(parse_doc),
         preceded(
             multispace0,
-            preceded(tag("protocol"), space_delimited(alphanumeric1)),
+            preceded(
+                space_or_comment_delimited(tag("protocol")),
+                space_delimited(parse_var_name),
+            ),
         ),
         delimited(
             space_delimited(tag("{")),
@@ -904,24 +933,29 @@ mod test {
     use serde_json::{Map, Number, Value};
 
     #[rstest]
-    #[case("string message;", (Schema::String, None, None, "message",None))]
-    #[case("string  message;", (Schema::String, None, None, "message",None))]
-    #[case("string message ;", (Schema::String, None, None, "message",None))]
-    #[case(r#"string message = "holis" ;"#, (Schema::String, None, None, "message",Some(Value::String("holis".into()))))]
-    #[case(r#"string message = "holis";"#, (Schema::String, None, None, "message",Some(Value::String("holis".into()))))]
-    #[case(r#"string @order("ignore") message = "holis";"#, (Schema::String, Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis".into()))))]
-    #[case(r#"string @order("ignore") message = "holis how are you";"#, (Schema::String, Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis how are you".into()))))]
-    fn test_parse_string_ok(
-        #[case] input: &str,
-        #[case] expected: (
-            Schema,
-            Option<RecordFieldOrder>,
-            Option<Vec<String>>,
-            VarName,
-            Option<Value>,
-        ),
-    ) {
-        assert_eq!(parse_field(input), Ok(("", expected)));
+    #[case("// holis\n", " holis")]
+    #[case(
+        "// TODO: Move to another place, etc.\n",
+        " TODO: Move to another place, etc."
+    )]
+    #[case("/*Som343f */", "Som343f ")]
+    #[case("//Som343f\n", "Som343f")]
+    #[case("/* holis */", " holis ")]
+    #[case(
+        "/* TODO: Move to another place, etc. */",
+        " TODO: Move to another place, etc. "
+    )]
+    fn test_parse_comment_ok<'a>(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(parse_comment::<'a, &str, ()>(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(
+        "/** Documentation for the enum type Kind */",
+        "Documentation for the enum type Kind"
+    )]
+    fn test_parse_doc(#[case] input: &str, #[case] expected: String) {
+        assert_eq!(parse_doc(input), Ok(("", expected)))
     }
 
     #[rstest]
@@ -945,26 +979,79 @@ mod test {
     }
 
     #[rstest]
-    #[case("1var_name")]
-    #[case("-1var_name")]
-    #[case("$0_1var_name")]
-    #[case("1_n20umbers3")]
-    #[case("1_n20umbers3_")]
-    fn test_parse_var_name_fail(#[case] input: &str) {
-        assert!(parse_var_name(input).is_err());
+    #[case(r#"@aliases(["oldField", "ancientField"])"#, vec![String::from("oldField"), String::from("ancientField")])]
+    #[case(r#"@aliases ( [ "oldField", "ancientField" ] )"#, vec![String::from("oldField"), String::from("ancientField")])]
+    #[case(r#"@aliases ( [ "oldField", /* holis */ "ancientField" ] )"#, vec![String::from("oldField"), String::from("ancientField")])]
+    #[case("@aliases ( [ \"oldField\" // \"ancientField\" \n ] )", vec![String::from("oldField")])]
+    fn test_alias(#[case] input: &str, #[case] expected: Vec<String>) {
+        assert_eq!(parse_aliases(input), Ok(("", expected)));
     }
 
     #[rstest]
-    #[case("bytes message;", (Schema::Bytes, None, None, "message",None))]
-    #[case("bytes  message;", (Schema::Bytes, None, None, "message",None))]
-    #[case("bytes message ;", (Schema::Bytes, None, None, "message",None))]
-    #[case(r#"bytes message = "holis" ;"#, (Schema::Bytes, None, None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
-    #[case(r#"bytes message = "holis";"#, (Schema::Bytes, None, None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
-    #[case(r#"bytes @order("ignore") message = "holis";"#, (Schema::Bytes, Some(RecordFieldOrder::Ignore), None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
-    fn test_parse_bytes_ok(
+    #[case(r#"@aliases(["oldField", "ancientField"])"#, vec![Alias::new("oldField").unwrap(), Alias::new("ancientField").unwrap()])]
+    #[case(r#"@aliases(["oldField","ancientField"])"#, vec![Alias::new("oldField").unwrap(), Alias::new("ancientField").unwrap()])]
+    #[case(r#"@aliases(["org.old.OldRecord","org.ancient.AncientRecord"])"#, vec![Alias::new("org.old.OldRecord").unwrap(), Alias::new("org.ancient.AncientRecord").unwrap()])]
+    fn test_namespaced_alias(#[case] input: &str, #[case] expected: Vec<Alias>) {
+        assert_eq!(parse_namespaced_aliases(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(
+        r#"@namespace("org.apache.avro.test")"#,
+        String::from("org.apache.avro.test")
+    )]
+    #[case(
+        r#"@namespace  ( "org.apache.avro.test" )"#,
+        String::from("org.apache.avro.test")
+    )]
+    #[case(
+        r#"@namespace  ( "org.apache.avro.test" )"#,
+        String::from("org.apache.avro.test")
+    )]
+    #[case(
+        r#"@namespace  (
+        "org.apache.avro.test"
+    )"#,
+        String::from("org.apache.avro.test")
+    )]
+    fn test_parse_namespace(#[case] input: &str, #[case] expected: String) {
+        assert_eq!(parse_namespace(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(r#"@order("ascending")"#, RecordFieldOrder::Ascending)]
+    #[case(
+        r#"@order(
+        "ascending"
+    )"#,
+        RecordFieldOrder::Ascending
+    )]
+    #[case(r#"@order("descending")"#, RecordFieldOrder::Descending)]
+    #[case(r#"@order("ignore")"#, RecordFieldOrder::Ignore)]
+    fn test_parse_order(#[case] input: &str, #[case] expected: RecordFieldOrder) {
+        assert_eq!(parse_order(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(r#""org.ancient.AncientRecord""#, "org.ancient.AncientRecord".to_string())]
+    #[case(r#""ancientField""#, "ancientField".to_string())]
+    fn test_namespace_parser(#[case] input: &str, #[case] expected: String) {
+        assert_eq!(parse_namespace_value(input), Ok(("", expected)))
+    }
+
+    #[rstest]
+    #[case("string message;", (Schema::String, None, None, None, "message",None))]
+    #[case("string  message;", (Schema::String, None, None, None, "message",None))]
+    #[case("string message ;", (Schema::String, None, None, None, "message",None))]
+    #[case(r#"string message = "holis" ;"#, (Schema::String, None, None, None, "message",Some(Value::String("holis".into()))))]
+    #[case(r#"string message = "holis";"#, (Schema::String, None, None, None, "message",Some(Value::String("holis".into()))))]
+    #[case(r#"string @order("ignore") message = "holis";"#, (Schema::String, None, Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis".into()))))]
+    #[case(r#"string @order("ignore") message = "holis how are you";"#, (Schema::String, None, Some(RecordFieldOrder::Ignore), None, "message",Some(Value::String("holis how are you".into()))))]
+    fn test_parse_string_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -975,15 +1062,47 @@ mod test {
     }
 
     #[rstest]
-    #[case("boolean active;", (Schema::Boolean, None, None, "active", None))]
-    #[case(r#"boolean @order("ignore") active;"#, (Schema::Boolean, Some(RecordFieldOrder::Ignore), None, "active", None))]
-    #[case("boolean active = true;", (Schema::Boolean, None, None, "active", Some(Value::Bool(true))))]
-    #[case("boolean active = false;", (Schema::Boolean, None, None, "active", Some(Value::Bool(false))))]
-    #[case("boolean   active   =   false ;", (Schema::Boolean, None, None, "active", Some(Value::Bool(false))))]
+    #[case("1var_name")]
+    #[case("-1var_name")]
+    #[case("$0_1var_name")]
+    #[case("1_n20umbers3")]
+    #[case("1_n20umbers3_")]
+    fn test_parse_var_name_fail(#[case] input: &str) {
+        assert!(parse_var_name(input).is_err());
+    }
+
+    #[rstest]
+    #[case("bytes message;", (Schema::Bytes, None, None, None, "message",None))]
+    #[case("bytes  message;", (Schema::Bytes, None, None, None, "message",None))]
+    #[case("bytes message ;", (Schema::Bytes, None, None, None, "message",None))]
+    #[case(r#"bytes message = "holis" ;"#, (Schema::Bytes, None, None, None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
+    #[case(r#"bytes message = "holis";"#, (Schema::Bytes, None, None, None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
+    #[case(r#"bytes @order("ignore") message = "holis";"#, (Schema::Bytes, None, Some(RecordFieldOrder::Ignore), None, "message",Some(Value::Array(Vec::from([Value::Number(104.into()), Value::Number(111.into()), Value::Number(108.into()), Value::Number(105.into()), Value::Number(115.into())])))))]
+    fn test_parse_bytes_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<Doc>,
+            Option<RecordFieldOrder>,
+            Option<Vec<String>>,
+            VarName,
+            Option<Value>,
+        ),
+    ) {
+        assert_eq!(parse_field(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case("boolean active;", (Schema::Boolean, None, None, None, "active", None))]
+    #[case(r#"boolean @order("ignore") active;"#, (Schema::Boolean, None, Some(RecordFieldOrder::Ignore), None, "active", None))]
+    #[case("boolean active = true;", (Schema::Boolean, None, None, None, "active", Some(Value::Bool(true))))]
+    #[case("boolean active = false;", (Schema::Boolean, None, None, None, "active", Some(Value::Bool(false))))]
+    #[case("boolean   active   =   false ;", (Schema::Boolean, None, None, None, "active", Some(Value::Bool(false))))]
     fn test_parse_boolean_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -1002,14 +1121,15 @@ mod test {
     }
 
     #[rstest]
-    #[case("int age;", (Schema::Int, None, None, "age", None))]
-    #[case("int age = 12;", (Schema::Int, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case("int age = 0;", (Schema::Int, None, None, "age", Some(Value::Number(0.into()))))]
-    #[case("int   age   =   123 ;", (Schema::Int, None, None, "age", Some(Value::Number(123.into()))))]
+    #[case("int age;", (Schema::Int, None, None, None, "age", None))]
+    #[case("int age = 12;", (Schema::Int, None, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("int age = 0;", (Schema::Int, None, None, None, "age", Some(Value::Number(0.into()))))]
+    #[case("int   age   =   123 ;", (Schema::Int, None, None, None, "age", Some(Value::Number(123.into()))))]
     fn test_parse_int_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -1029,24 +1149,26 @@ mod test {
     }
 
     #[rstest]
-    #[case("int age;", (Schema::Int, None, None, "age", None))]
-    #[case("int age = 12;", (Schema::Int, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case("int age = 0;", (Schema::Int, None, None, "age", Some(Value::Number(0.into()))))]
-    #[case("int   age   =   123 ;", (Schema::Int, None, None, "age", Some(Value::Number(123.into()))))]
-    #[case("time_ms age;", (Schema::TimeMillis, None, None, "age", None))]
-    #[case("time_ms age = 12;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case("time_ms age = 0;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(0.into()))))]
-    #[case("time_ms   age   =   123 ;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(123.into()))))]
-    #[case("timestamp_ms age;", (Schema::TimestampMillis, None, None, "age", None))]
-    #[case("timestamp_ms age = 12;", (Schema::TimestampMillis, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case("@logicalType(\"timestamp-micros\")\nlong ts = 12;", (Schema::TimestampMicros, None, None, "ts", Some(Value::Number(12.into()))))]
-    #[case("date age;", (Schema::Date, None, None, "age", None))]
-    #[case("date age = 12;", (Schema::Date, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, "pk", Some(Value::String("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8".into()))))]
+    #[case("int age;", (Schema::Int, None, None, None, "age", None))]
+    #[case("/** How old is */ int age;", (Schema::Int, Some(String::from("How old is")), None, None, "age", None))]
+    #[case("int age = 12;", (Schema::Int, None, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("int age = 0;", (Schema::Int, None, None, None, "age", Some(Value::Number(0.into()))))]
+    #[case("int   age   =   123 ;", (Schema::Int, None, None, None, "age", Some(Value::Number(123.into()))))]
+    #[case("time_ms age;", (Schema::TimeMillis, None, None, None, "age", None))]
+    #[case("time_ms age = 12;", (Schema::TimeMillis, None, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("time_ms age = 0;", (Schema::TimeMillis, None, None, None, "age", Some(Value::Number(0.into()))))]
+    #[case("time_ms   age   =   123 ;", (Schema::TimeMillis, None, None, None, "age", Some(Value::Number(123.into()))))]
+    #[case("timestamp_ms age;", (Schema::TimestampMillis, None, None, None, "age", None))]
+    #[case("timestamp_ms age = 12;", (Schema::TimestampMillis, None, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case("@logicalType(\"timestamp-micros\")\nlong ts = 12;", (Schema::TimestampMicros, None, None, None, "ts", Some(Value::Number(12.into()))))]
+    #[case("date age;", (Schema::Date, None, None, None, "age", None))]
+    #[case("date age = 12;", (Schema::Date, None, None, None, "age", Some(Value::Number(12.into()))))]
+    #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, None, "pk", Some(Value::String("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8".into()))))]
     fn test_parse_logical_field_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -1071,15 +1193,16 @@ mod test {
     }
 
     #[rstest]
-    #[case("long stock;", (Schema::Long, None, None, "stock", None))]
-    #[case("long stock = 12;", (Schema::Long, None, None, "stock", Some(Value::Number(12.into()))))]
-    #[case("long stock = 9223372036854775807;", (Schema::Long, None, None, "stock", Some(Value::Number(Number::from(9223372036854775807 as i64)))))]
-    #[case("long stock = 0;", (Schema::Long, None, None, "stock", Some(Value::Number(0.into()))))]
-    #[case("long   stock   =   123 ;", (Schema::Long, None, None, "stock", Some(Value::Number(123.into()))))]
+    #[case("long stock;", (Schema::Long, None, None, None, "stock", None))]
+    #[case("long stock = 12;", (Schema::Long, None, None, None, "stock", Some(Value::Number(12.into()))))]
+    #[case("long stock = 9223372036854775807;", (Schema::Long, None, None, None, "stock", Some(Value::Number(Number::from(9223372036854775807 as i64)))))]
+    #[case("long stock = 0;", (Schema::Long, None, None, None, "stock", Some(Value::Number(0.into()))))]
+    #[case("long   stock   =   123 ;", (Schema::Long, None, None, None, "stock", Some(Value::Number(123.into()))))]
     fn test_parse_long_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -1090,19 +1213,20 @@ mod test {
     }
     //
     #[rstest]
-    #[case("float age;", (Schema::Float, None, None, "age", None))]
-    #[case("float age = 12;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
-    #[case("float age = 12.0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
-    #[case("float age = 0.0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("float age = .0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("float age = 0.1123;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.1123).unwrap()))))]
-    #[case("float age = 3.40282347e38;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
-    #[case("float age = 0;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("float   age   =   123 ;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
+    #[case("float age;", (Schema::Float, None, None, None, "age", None))]
+    #[case("float age = 12;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("float age = 12.0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("float age = 0.0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float age = .0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float age = 0.1123;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.1123).unwrap()))))]
+    #[case("float age = 3.40282347e38;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
+    #[case("float age = 0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("float   age   =   123 ;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
     fn test_parse_float_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -1122,20 +1246,21 @@ mod test {
     }
 
     #[rstest]
-    #[case("double stock;", (Schema::Double, None, None, "stock", None))]
-    #[case("double stock = 12;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
-    #[case("double stock = 9223372036854775807;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(9223372036854775807.0).unwrap()))))]
-    #[case("double stock = 123.456;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(123.456).unwrap()))))]
-    #[case("double stock = 1.7976931348623157e308;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(f64::MAX).unwrap()))))]
-    #[case("double stock = 0.0;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("double stock = .0;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("double stock = 0;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case(r#"double @order("descending") stock = 0;"#, (Schema::Double, Some(RecordFieldOrder::Descending), None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
-    #[case("double   stock   =   123.3 ;", (Schema::Double, None, None, "stock", Some(Value::Number(Number::from_f64(123.3).unwrap()))))]
+    #[case("double stock;", (Schema::Double, None, None, None, "stock", None))]
+    #[case("double stock = 12;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(12.0).unwrap()))))]
+    #[case("double stock = 9223372036854775807;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(9223372036854775807.0).unwrap()))))]
+    #[case("double stock = 123.456;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(123.456).unwrap()))))]
+    #[case("double stock = 1.7976931348623157e308;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(f64::MAX).unwrap()))))]
+    #[case("double stock = 0.0;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("double stock = .0;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("double stock = 0;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case(r#"double @order("descending") stock = 0;"#, (Schema::Double, None, Some(RecordFieldOrder::Descending), None, "stock", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
+    #[case("double   stock   =   123.3 ;", (Schema::Double, None, None, None, "stock", Some(Value::Number(Number::from_f64(123.3).unwrap()))))]
     fn test_parse_double_ok(
         #[case] input: &str,
         #[case] expected: (
             Schema,
+            Option<Doc>,
             Option<RecordFieldOrder>,
             Option<Vec<String>>,
             VarName,
@@ -1153,8 +1278,96 @@ mod test {
         assert!(parse_field(input).is_err());
     }
 
+    #[rstest]
+    #[case("/** Stock */ array<string> stock;", (Schema::Array(Box::new(Schema::String)), Some(String::from("Stock")), None, None, "stock", None))]
+    #[case(r#"array<array<string>> stock = [["cacao"]];"#, (Schema::Array(Box::new(Schema::Array(Box::new(Schema::String)))), None, None, None, "stock", Some(Value::Array(Vec::from([Value::Array(Vec::from([Value::String(String::from("cacao"))]))])))))]
+    #[case(r#"array<string> stock = ["cacao"];"#, (Schema::Array(Box::new(Schema::String)), None, None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from("cacao"))])))))]
+    #[case("array<string> stock;", (Schema::Array(Box::new(Schema::String)), None, None, None, "stock", None))]
+    #[case("array<string> stock = [];", (Schema::Array(Box::new(Schema::String)), None, None, None, "stock", Some(Value::Array(Vec::new()))))]
+    #[case(r#"array<string> stock = [""];"#, (Schema::Array(Box::new(Schema::String)), None, None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from(""))])))))]
+    #[case(r#"array<string> stock = ["cacao nibs"];"#, (Schema::Array(Box::new(Schema::String)), None, None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from("cacao nibs"))])))))]
+    #[case(r#"array<string> @aliases(["item"]) stock;"#, (Schema::Array(Box::new(Schema::String)), None, None, Some(vec![String::from("item")]), "stock", None))]
+    #[case(r#"array<string> @order("ascending") stock;"#, (Schema::Array(Box::new(Schema::String)), None, Some(RecordFieldOrder::Ascending), None, "stock", None))]
+    fn test_parse_array_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<Doc>,
+            Option<RecordFieldOrder>,
+            Option<Vec<String>>,
+            VarName,
+            Option<Value>,
+        ),
+    ) {
+        assert_eq!(parse_array(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(r#"map<string> stock;"#, (Schema::Map(Box::new(Schema::String)), None, None, None, "stock", None))]
+    #[case(r#"map<string> @order("ascending") stock;"#, (Schema::Map(Box::new(Schema::String)), None, Some(RecordFieldOrder::Ascending), None, "stock", None))]
+    #[case(r#"map<string> stock = {"hey": "hello"};"#, (Schema::Map(Box::new(Schema::String)), None, None, None, "stock", Some(Value::Object(Map::from_iter([(String::from("hey"), Value::String(String::from("hello")))])))))]
+    fn test_parse_map_ok(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<Doc>,
+            Option<RecordFieldOrder>,
+            Option<Vec<String>>,
+            VarName,
+            Option<Value>,
+        ),
+    ) {
+        assert_eq!(parse_map(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(
+        r#"union { null, string } item_id = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), None, None, None, "item_id", Some(Value::Null))
+    )]
+    #[case(
+        r#"/** Item */union { null, string } item_id = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), Some(String::from("Item")), None, None, "item_id", Some(Value::Null))
+    )]
+    #[case(
+        r#"union { null, string } item = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), None, None, None, "item", Some(Value::Null))
+    )]
+    #[case(
+        r#"union { int, string } item = 1;"#, (Schema::Union(UnionSchema::new(vec![Schema::Int, Schema::String]).unwrap()), None, None, None, "item", Some(Value::Number(1.into())))
+    )]
+    #[case(
+        r#"union { string, int } item = "1";"#, (Schema::Union(UnionSchema::new(vec![Schema::String, Schema::Int]).unwrap()), None, None, None, "item", Some(Value::String("1".to_string())))
+    )]
+    fn test_union(
+        #[case] input: &str,
+        #[case] expected: (
+            Schema,
+            Option<Doc>,
+            Option<RecordFieldOrder>,
+            Option<Vec<String>>,
+            VarName,
+            Option<Value>,
+        ),
+    ) {
+        assert_eq!(parse_union(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(r#"fixed MD5(16);"#, Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()})]
+    #[case("/** my hash */ \nfixed MD5(16);", Schema::Fixed { name: "MD5".into(), aliases: None, doc: Some("my hash".to_string()), size: 16, attributes: BTreeMap::new()})]
+    #[case(r#"fixed @aliases(["md1"]) MD5(16);"#, Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()})]
+    fn test_parse_fixed_ok(#[case] input: &str, #[case] expected: Schema) {
+        assert_eq!(parse_fixed(input), Ok(("", expected)));
+    }
+
+    #[rstest]
+    #[case(r#"= holis;"#, "holis")]
+    #[case(r#"= holis ;"#, "holis")]
+    #[case(r#"= CIRCLE;"#, "CIRCLE")]
+    fn test_parse_enum_default(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(parse_enum_default(input), Ok(("", expected.to_string())))
+    }
+
     #[test]
-    fn test_parse_item() {
+    fn test_parse_enum_item() {
         let items = ["   CIRCLE  ", "\nCIRCLE\n\n"];
         for item in items {
             let out = parse_enum_item(item);
@@ -1241,157 +1454,6 @@ mod test {
             attributes: BTreeMap::new(),
         };
         assert_eq!(o, Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#"@aliases(["oldField", "ancientField"])"#, vec![String::from("oldField"), String::from("ancientField")])]
-    #[case(r#"@aliases ( [ "oldField", "ancientField" ] )"#, vec![String::from("oldField"), String::from("ancientField")])]
-    #[case(r#"@aliases ( [ "oldField", /* holis */ "ancientField" ] )"#, vec![String::from("oldField"), String::from("ancientField")])]
-    #[case("@aliases ( [ \"oldField\" // \"ancientField\" \n ] )", vec![String::from("oldField")])]
-    fn test_alias(#[case] input: &str, #[case] expected: Vec<String>) {
-        assert_eq!(parse_aliases(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#"@aliases(["oldField", "ancientField"])"#, vec![Alias::new("oldField").unwrap(), Alias::new("ancientField").unwrap()])]
-    #[case(r#"@aliases(["oldField","ancientField"])"#, vec![Alias::new("oldField").unwrap(), Alias::new("ancientField").unwrap()])]
-    #[case(r#"@aliases(["org.old.OldRecord","org.ancient.AncientRecord"])"#, vec![Alias::new("org.old.OldRecord").unwrap(), Alias::new("org.ancient.AncientRecord").unwrap()])]
-    fn test_namespaced_alias(#[case] input: &str, #[case] expected: Vec<Alias>) {
-        assert_eq!(parse_namespaced_aliases(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(
-        r#"@namespace("org.apache.avro.test")"#,
-        String::from("org.apache.avro.test")
-    )]
-    #[case(
-        r#"@namespace  ( "org.apache.avro.test" )"#,
-        String::from("org.apache.avro.test")
-    )]
-    #[case(
-        r#"@namespace  ( "org.apache.avro.test" )"#,
-        String::from("org.apache.avro.test")
-    )]
-    #[case(
-        r#"@namespace  (
-        "org.apache.avro.test"
-    )"#,
-        String::from("org.apache.avro.test")
-    )]
-    fn test_parse_namespace(#[case] input: &str, #[case] expected: String) {
-        assert_eq!(parse_namespace(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#"array<array<string>> stock = [["cacao"]];"#, (Schema::Array(Box::new(Schema::Array(Box::new(Schema::String)))), None, None, "stock", Some(Value::Array(Vec::from([Value::Array(Vec::from([Value::String(String::from("cacao"))]))])))))]
-    #[case(r#"array<string> stock = ["cacao"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from("cacao"))])))))]
-    #[case("array<string> stock;", (Schema::Array(Box::new(Schema::String)), None, None, "stock", None))]
-    #[case("array<string> stock = [];", (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::new()))))]
-    #[case(r#"array<string> stock = [""];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from(""))])))))]
-    #[case(r#"array<string> stock = ["cacao nibs"];"#, (Schema::Array(Box::new(Schema::String)), None, None, "stock", Some(Value::Array(Vec::from([Value::String(String::from("cacao nibs"))])))))]
-    #[case(r#"array<string> @aliases(["item"]) stock;"#, (Schema::Array(Box::new(Schema::String)), None, Some(vec![String::from("item")]), "stock", None))]
-    #[case(r#"array<string> @order("ascending") stock;"#, (Schema::Array(Box::new(Schema::String)), Some(RecordFieldOrder::Ascending), None, "stock", None))]
-    fn test_parse_array_ok(
-        #[case] input: &str,
-        #[case] expected: (
-            Schema,
-            Option<RecordFieldOrder>,
-            Option<Vec<String>>,
-            VarName,
-            Option<Value>,
-        ),
-    ) {
-        assert_eq!(parse_array(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#"map<string> stock;"#, (Schema::Map(Box::new(Schema::String)), None, None, "stock", None))]
-    #[case(r#"map<string> @order("ascending") stock;"#, (Schema::Map(Box::new(Schema::String)), Some(RecordFieldOrder::Ascending), None, "stock", None))]
-    #[case(r#"map<string> stock = {"hey": "hello"};"#, (Schema::Map(Box::new(Schema::String)), None, None, "stock", Some(Value::Object(Map::from_iter([(String::from("hey"), Value::String(String::from("hello")))])))))]
-    fn test_parse_map_ok(
-        #[case] input: &str,
-        #[case] expected: (
-            Schema,
-            Option<RecordFieldOrder>,
-            Option<Vec<String>>,
-            VarName,
-            Option<Value>,
-        ),
-    ) {
-        assert_eq!(parse_map(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#"fixed MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}))]
-    #[case("/** my hash */ \nfixed MD5(16);", (Schema::Fixed { name: "MD5".into(), aliases: None, doc: Some("my hash".to_string()), size: 16, attributes: BTreeMap::new()}))]
-    #[case(r#"fixed @aliases(["md1"]) MD5(16);"#, (Schema::Fixed { name: "MD5".into(), aliases: None, doc: None, size: 16, attributes: BTreeMap::new()}))]
-    fn test_parse_fixed_ok(#[case] input: &str, #[case] expected: Schema) {
-        assert_eq!(parse_fixed(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(
-        r#"union { null, string } item_id = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), None, None, "item_id", Some(Value::Null))
-    )]
-    #[case(
-        r#"union { null, string } item = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), None, None, "item", Some(Value::Null))
-    )]
-    #[case(
-        r#"union { int, string } item = 1;"#, (Schema::Union(UnionSchema::new(vec![Schema::Int, Schema::String]).unwrap()), None, None, "item", Some(Value::Number(1.into())))
-    )]
-    #[case(
-        r#"union { string, int } item = "1";"#, (Schema::Union(UnionSchema::new(vec![Schema::String, Schema::Int]).unwrap()), None, None, "item", Some(Value::String("1".to_string())))
-    )]
-    fn test_union(
-        #[case] input: &str,
-        #[case] expected: (
-            Schema,
-            Option<RecordFieldOrder>,
-            Option<Vec<String>>,
-            VarName,
-            Option<Value>,
-        ),
-    ) {
-        assert_eq!(parse_union(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#"@order("ascending")"#, RecordFieldOrder::Ascending)]
-    #[case(
-        r#"@order(
-        "ascending"
-    )"#,
-        RecordFieldOrder::Ascending
-    )]
-    #[case(r#"@order("descending")"#, RecordFieldOrder::Descending)]
-    #[case(r#"@order("ignore")"#, RecordFieldOrder::Ignore)]
-    fn test_parse_order(#[case] input: &str, #[case] expected: RecordFieldOrder) {
-        assert_eq!(parse_order(input), Ok(("", expected)));
-    }
-
-    #[rstest]
-    #[case(r#""org.ancient.AncientRecord""#, "org.ancient.AncientRecord".to_string())]
-    #[case(r#""ancientField""#, "ancientField".to_string())]
-    fn test_namespace_parser(#[case] input: &str, #[case] expected: String) {
-        assert_eq!(parse_namespace_value(input), Ok(("", expected)))
-    }
-
-    #[rstest]
-    #[case(r#"= holis;"#, "holis")]
-    #[case(r#"= holis ;"#, "holis")]
-    #[case(r#"= CIRCLE;"#, "CIRCLE")]
-    fn test_parse_enum_default(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(parse_enum_default(input), Ok(("", expected.to_string())))
-    }
-
-    #[rstest]
-    #[case(
-        "/** Documentation for the enum type Kind */",
-        " Documentation for the enum type Kind "
-    )]
-    fn test_parse_doc(#[case] input: &str, #[case] expected: String) {
-        assert_eq!(parse_doc(input), Ok(("", expected)))
     }
 
     #[rstest]
@@ -1585,22 +1647,5 @@ mod test {
             attributes: BTreeMap::new(),
         };
         assert_eq!(schema, expected);
-    }
-
-    #[rstest]
-    #[case("// holis\n", " holis")]
-    #[case(
-        "// TODO: Move to another place, etc.\n",
-        " TODO: Move to another place, etc."
-    )]
-    #[case("/*Som343f */", "Som343f ")]
-    #[case("//Som343f\n", "Som343f")]
-    #[case("/* holis */", " holis ")]
-    #[case(
-        "/* TODO: Move to another place, etc. */",
-        " TODO: Move to another place, etc. "
-    )]
-    fn test_parse_comment_ok<'a>(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(parse_comment::<'a, &str, ()>(input), Ok(("", expected)));
     }
 }
