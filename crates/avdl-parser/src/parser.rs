@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::string_parser::parse_string as parse_string_uni;
 use apache_avro::schema::{Alias, Name, RecordFieldOrder};
 use apache_avro::schema::{RecordField, Schema, SchemaKind, UnionSchema};
-
+use apache_avro::types::Value as AvroValue;
 use nom::bytes::complete::take_till;
 use nom::character::complete::space0;
 
@@ -257,33 +257,30 @@ fn parse_enum(input: &str) -> IResult<&str, Schema> {
     ))
 }
 
-fn parse_str<'a, E: nom::error::ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
-    escaped(alphanumeric0, '\\', one_of("\"n\\"))(i)
-}
+/** ***************************** */
+/** Map Native and logical types  */
+/** ***************************** */
+
 
 // Sample
 // ```
 // "pepe"
 // ```
-fn parse_string_value(input: &str) -> IResult<&str, &str> {
-    preceded(char('"'), cut(terminated(parse_str, char('"'))))(input)
+fn map_string(input: &str) -> IResult<&str, AvroValue> {
+    map(parse_string_uni, |v| AvroValue::String(v))(input)
 }
 
-fn map_string(input: &str) -> IResult<&str, Value> {
-    map(parse_string_uni, |v| Value::String(v.into()))(input)
-}
-
-fn map_uuid(input: &str) -> IResult<&str, Value> {
-    map_res(parse_string_uni, |v| -> Result<Value, String> {
-        Uuid::from_str(&v).map_err(|_e| "not a valid uuid".to_string())?;
-        Ok(Value::String(v.into()))
+fn map_uuid(input: &str) -> IResult<&str, AvroValue> {
+    map_res(parse_string_uni, |v| -> Result<AvroValue, String> {
+        let uuid_val = Uuid::from_str(&v).map_err(|_e| "not a valid uuid".to_string())?;
+        Ok(AvroValue::Uuid(uuid_val))
     })(input)
 }
 
-fn map_bytes(input: &str) -> IResult<&str, Value> {
-    map(parse_string_value, |v| {
+fn map_bytes(input: &str) -> IResult<&str, AvroValue> {
+    map(parse_string_uni, |v| {
         let v: Vec<u8> = Vec::from(v);
-        Value::Array(v.into_iter().map(|b| b.into()).collect())
+        AvroValue::Bytes(v)
     })(input)
 }
 
@@ -291,31 +288,28 @@ fn map_bytes(input: &str) -> IResult<&str, Value> {
 // ```
 // null
 // ```
-fn map_null(input: &str) -> IResult<&str, Value> {
-    value(Value::Null, tag("null"))(input)
+fn map_null(input: &str) -> IResult<&str, AvroValue> {
+    value(AvroValue::Null, tag("null"))(input)
 }
 
 // Sample:
 // ```
 // true
 // ```
-fn map_bool(input: &str) -> IResult<&str, Value> {
+fn map_bool(input: &str) -> IResult<&str, AvroValue> {
     let parse_true = value(true, tag("true"));
     let parse_false = value(false, tag("false"));
-    map(alt((parse_true, parse_false)), |v| Value::Bool(v))(input)
-}
-
-fn map_usize(input: &str) -> IResult<&str, usize> {
-    map_res(digit1, |v: &str| v.parse::<usize>())(input)
+    map(alt((parse_true, parse_false)), |v| AvroValue::Boolean(v))(input)
 }
 
 // Sample:
 // ```
 // 20
 // ```
-fn map_int(input: &str) -> IResult<&str, Value> {
+fn map_int(input: &str) -> IResult<&str, AvroValue> {
     map(map_res(digit1, |v: &str| v.parse::<i32>()), |v| {
-        Value::Number(v.into())
+        AvroValue::Int(v)
+        // Value::Number(v.into())
     })(input)
 }
 
@@ -323,9 +317,10 @@ fn map_int(input: &str) -> IResult<&str, Value> {
 // ```
 // 20
 // ```
-fn map_long(input: &str) -> IResult<&str, Value> {
+fn map_long(input: &str) -> IResult<&str, AvroValue> {
     map(map_res(digit1, |v: &str| v.parse::<i64>()), |v| {
-        Value::Number(v.into())
+        AvroValue::Long(v)
+        // Value::Number(v.into())
     })(input)
 }
 
@@ -333,13 +328,13 @@ fn map_long(input: &str) -> IResult<&str, Value> {
 // ```
 // 20.0
 // ```
-fn map_float(input: &str) -> IResult<&str, Value> {
-    map_opt(
+fn map_float(input: &str) -> IResult<&str, AvroValue> {
+    map(
         map_res(
             take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
             |v: &str| v.parse::<f32>(),
         ),
-        |v| Some(Value::Number(Number::from_f64(v as f64)?)),
+        |v| AvroValue::Float(v),
     )(input)
 }
 
@@ -347,14 +342,64 @@ fn map_float(input: &str) -> IResult<&str, Value> {
 // ```
 // 20.0
 // ```
-fn map_double(input: &str) -> IResult<&str, Value> {
-    map_opt(
+fn map_double(input: &str) -> IResult<&str, AvroValue> {
+    map(
         map_res(
             take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
             |v: &str| v.parse::<f64>(),
         ),
-        |v| Some(Value::Number(Number::from_f64(v)?)),
+        |v| AvroValue::Double(v),
+        // Some(Value::Number(Number::from_f64(v)?)),
     )(input)
+}
+
+// Used to parse decimal information
+fn map_usize(input: &str) -> IResult<&str, usize> {
+    map_res(digit1, |v: &str| v.parse::<usize>())(input)
+}
+
+// parse according to the given schema
+fn parse_based_on_schema<'r>(
+    schema: Box<Schema>,
+) -> Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue>> {
+    match *schema {
+        Schema::Null => Box::new(map_null),
+        Schema::Boolean => Box::new(map_bool),
+        Schema::Int => Box::new(map_int),
+        Schema::Long => Box::new(map_long),
+        Schema::Float => Box::new(map_float),
+        Schema::Double => Box::new(map_double),
+        Schema::Bytes => Box::new(map_bytes),
+        Schema::String => Box::new(map_string),
+        Schema::Array(schema) => {
+            // let schema = *schema;
+            // let array_parser = parse_based_on_schema(&schema);
+            Box::new(move |input: &'r str| {
+                delimited(
+                    tag("["),
+                    map(
+                        separated_list0(tag(","), parse_based_on_schema(schema.clone())),
+                        |s| AvroValue::Array(s),
+                    ),
+                    tag("]"),
+                )(input)
+            }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue> + '_>
+        }
+        // Logical Types
+        Schema::Date => Box::new(map_int),
+        Schema::TimeMillis => Box::new(map_int),
+        Schema::TimestampMillis => Box::new(map_long),
+        Schema::Uuid => Box::new(map_uuid),
+        Schema::Decimal {
+            precision: _,
+            scale: _,
+            inner: _,
+        } => Box::new(map_bytes),
+        Schema::TimestampMicros => Box::new(map_long),
+        Schema::TimeMicros => Box::new(map_long),
+        Schema::Duration => todo!("This should be fixed"),
+        _ => unimplemented!("Not implemented yet"),
+    }
 }
 
 
@@ -396,7 +441,10 @@ fn parse_field(
             )),
             comment_delimited(parse_var_name),
             // default
-            opt(preceded(comment_delimited(tag("=")), default_parser)),
+            opt(preceded(
+                comment_delimited(tag("=")),
+                map_res(default_parser, |value| value.try_into()),
+            )),
         )),
         preceded(space0, comment_delimited(tag(";"))),
     )(tail)?;
@@ -437,9 +485,10 @@ pub fn parse_array(
                 space_delimited(tag("=")),
                 delimited(
                     tag("["),
-                    map(
+                    map_res(
                         separated_list0(tag(","), array_default_parser),
-                        Value::Array,
+                        |value| AvroValue::Array(value).try_into(),
+                        // Value::Array,
                     ),
                     tag("]"),
                 ),
@@ -460,7 +509,7 @@ pub fn parse_array(
     ))
 }
 
-pub fn parse_map_default_item(input: &str) -> IResult<&str, (String, Value)> {
+pub fn parse_map_default_item(input: &str) -> IResult<&str, (String, AvroValue)> {
     pair(
         parse_string_uni,
         preceded(
@@ -502,7 +551,7 @@ pub fn parse_map(
                 space_delimited(tag("=")),
                 delimited(
                     tag("{"),
-                    map(
+                    map_res(
                         separated_list0(
                             space_delimited(tag(",")),
                             pair(
@@ -510,7 +559,7 @@ pub fn parse_map(
                                 preceded(space_delimited(tag(":")), map_default_parser),
                             ),
                         ),
-                        |v| Value::Object(Map::from_iter(v)),
+                        |v| AvroValue::Map(HashMap::from_iter(v)).try_into(),
                     ),
                     tag("}"),
                 ),
@@ -688,81 +737,37 @@ fn parse_record_name(input: &str) -> IResult<&str, &str> {
     preceded(tag("record"), space_delimited(parse_var_name))(input)
 }
 
-// parse according to the given schema
-fn parse_based_on_schema<'r>(
-    schema: Box<Schema>,
-) -> Box<dyn FnMut(&'r str) -> IResult<&'r str, Value>> {
-    match *schema {
-        Schema::Null => Box::new(map_null),
-        Schema::Boolean => Box::new(map_bool),
-        Schema::Int => Box::new(map_int),
-        Schema::Long => Box::new(map_long),
-        Schema::Float => Box::new(map_float),
-        Schema::Double => Box::new(map_double),
-        Schema::Bytes => Box::new(map_bytes),
-        Schema::String => Box::new(map_string),
-        Schema::Array(schema) => {
-            // let schema = *schema;
-            // let array_parser = parse_based_on_schema(&schema);
-            Box::new(move |input: &'r str| {
-                delimited(
-                    tag("["),
-                    map(
-                        separated_list0(tag(","), parse_based_on_schema(schema.clone())),
-                        |s| Value::Array(s),
-                    ),
-                    tag("]"),
-                )(input)
-            }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, Value> + '_>
-        }
-        // Logical Types
-        Schema::Date => Box::new(map_int),
-        Schema::TimeMillis => Box::new(map_int),
-        Schema::TimestampMillis => Box::new(map_long),
-        Schema::Uuid => Box::new(map_uuid),
-        Schema::Decimal {
-            precision: _,
-            scale: _,
-            inner: _,
-        } => Box::new(map_bytes),
-        Schema::TimestampMicros => Box::new(map_long),
-        Schema::TimeMicros => Box::new(map_long),
-        Schema::Duration => todo!("This should be fixed"),
-        _ => unimplemented!("Not implemented yet"),
-    }
-}
-
 // TODO: Refactor union to stop using this function and replace with parse_based_on_schema
 fn map_schema_to_value(value: &str, schema: SchemaKind) -> Value {
     match schema {
         SchemaKind::Null => Value::Null,
         SchemaKind::Boolean => {
             let (_, v) = map_bool(value).unwrap();
-            v
+            v.try_into().expect("Could not unparse")
         }
         SchemaKind::Int => {
             let (_, v) = map_int(value).unwrap();
-            v
+            v.try_into().expect("Could not unparse")
         }
         SchemaKind::Long => {
             let (_, v) = map_long(value).unwrap();
-            v
+            v.try_into().expect("Could not unparse")
         }
         SchemaKind::Float => {
             let (_, v) = map_float(value).unwrap();
-            v
+            v.try_into().expect("Could not unparse")
         }
         SchemaKind::Double => {
             let (_, v) = map_double(value).unwrap();
-            v
+            v.try_into().expect("Could not unparse")
         }
         SchemaKind::Bytes => {
             let (_, v) = map_bytes(value).expect("invalid bytes");
-            v
+            v.try_into().expect("Could not unparse")
         }
         SchemaKind::String => {
             let (_, v) = map_string(value).expect("invalid string");
-            v
+            v.try_into().expect("Could not unparse")
         }
         _ => unimplemented!("Not implemented yet"),
     }
@@ -816,9 +821,8 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
                     custom_attributes: BTreeMap::new(),
                 }
             }),
-            map(
-                parse_field,
-                |(schemas, order, aliases, name, default)| RecordField {
+            map(parse_field, |(schemas, order, aliases, name, default)| {
+                RecordField {
                     name: name.to_string(),
                     doc: None,
                     default: default,
@@ -827,8 +831,8 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
                     aliases: aliases,
                     position: 0,
                     custom_attributes: BTreeMap::new(),
-                },
-            ),
+                }
+            }),
             map(parse_fixed, |(schemas, order, aliases, name)| RecordField {
                 name: name.to_string(),
                 doc: None, // TODO: Fixed already has a doc, should it also be here?
@@ -883,7 +887,6 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
         },
     ))
 }
-
 
 // Sample:
 // `/* Hello */`
@@ -1081,7 +1084,7 @@ mod test {
     #[case("@logicalType(\"timestamp-micros\")\nlong ts = 12;", (Schema::TimestampMicros, None, None, "ts", Some(Value::Number(12.into()))))]
     #[case("date age;", (Schema::Date, None, None, "age", None))]
     #[case("date age = 12;", (Schema::Date, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, "pk", Some(Value::String("a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8".into()))))]
+    #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, "pk", Some(Value::String("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8".into()))))]
     fn test_parse_logical_field_ok(
         #[case] input: &str,
         #[case] expected: (
@@ -1185,9 +1188,9 @@ mod test {
     }
 
     #[rstest]
-    #[case("double stock")]  // missing semi-colon
-    #[case(r#"double stock = "false""#)]  // wrong type
-    #[case(r#"double stock = 123"#)]  // missing semi-colon with default
+    #[case("double stock")] // missing semi-colon
+    #[case(r#"double stock = "false""#)] // wrong type
+    #[case(r#"double stock = 123"#)] // missing semi-colon with default
     fn test_parse_double_fail(#[case] input: &str) {
         assert!(parse_field(input).is_err());
     }
