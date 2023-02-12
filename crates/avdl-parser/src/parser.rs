@@ -220,9 +220,12 @@ pub fn parse_order(input: &str) -> IResult<&str, RecordFieldOrder> {
 // ```
 // = COIN;
 // ```
-fn parse_enum_default(input: &str) -> IResult<&str, &str> {
+fn parse_enum_default(input: &str) -> IResult<&str, String> {
     terminated(
-        preceded(space_delimited(tag("=")), parse_enum_item),
+        preceded(
+            space_delimited(tag("=")),
+            map(parse_enum_item, |value| value.to_string()),
+        ),
         tag(";"),
     )(input)
 }
@@ -232,7 +235,7 @@ fn parse_enum_default(input: &str) -> IResult<&str, &str> {
 // enum Items { COIN, NUMBER } = COIN;
 // ```
 fn parse_enum(input: &str) -> IResult<&str, Schema> {
-    let (tail, (aliases, name, body, _default)) = tuple((
+    let (tail, (aliases, name, body, default)) = tuple((
         opt(map_parse_aliases),
         parse_enum_name,
         parse_enum_symbols,
@@ -241,7 +244,7 @@ fn parse_enum(input: &str) -> IResult<&str, Schema> {
     let n = Name::new(name).unwrap();
 
     // TODO: Check if we need to validate enum's default against one of the options
-    if _default.is_some() {
+    if default.is_some() {
         println!("Warning: default is being ignored as of now.")
     }
 
@@ -260,7 +263,6 @@ fn parse_enum(input: &str) -> IResult<&str, Schema> {
 /** ***************************** */
 /** Map Native and logical types  */
 /** ***************************** */
-
 
 // Sample
 // ```
@@ -385,6 +387,12 @@ fn parse_based_on_schema<'r>(
                 )(input)
             }) as Box<dyn FnMut(&'r str) -> IResult<&'r str, AvroValue> + '_>
         }
+        Schema::Union(union_schema) => {
+            let schemas = union_schema.variants();
+            let schema = schemas.first().expect("There should be at least 2 schemas in the union");
+            parse_based_on_schema(Box::new(schema.clone()))
+        },
+
         // Logical Types
         Schema::Date => Box::new(map_int),
         Schema::TimeMillis => Box::new(map_int),
@@ -398,10 +406,10 @@ fn parse_based_on_schema<'r>(
         Schema::TimestampMicros => Box::new(map_long),
         Schema::TimeMicros => Box::new(map_long),
         Schema::Duration => todo!("This should be fixed"),
+
         _ => unimplemented!("Not implemented yet"),
     }
 }
-
 
 // Sample:
 // ```
@@ -452,12 +460,16 @@ fn parse_field(
     Ok((tail, (schema, order, aliases, varname, defaults)))
 }
 
+/** ***************  */
+/**  Complex Types  */
+/** *************** */
+
 // Samples
 // ```
 // array<long> arrayOfLongs;
 // array<long> @aliases(["vecOfLongs"]) arrayOfLongs;
 // ```
-pub fn parse_array(
+fn parse_array(
     input: &str,
 ) -> IResult<
     &str,
@@ -509,21 +521,11 @@ pub fn parse_array(
     ))
 }
 
-pub fn parse_map_default_item(input: &str) -> IResult<&str, (String, AvroValue)> {
-    pair(
-        parse_string_uni,
-        preceded(
-            space_delimited(tag(":")),
-            parse_based_on_schema(Box::new(Schema::String)),
-        ),
-    )(input)
-}
-
 // Sample:
 // ```
 // map<int> foo2 = {};
 // ```
-pub fn parse_map(
+fn parse_map(
     input: &str,
 ) -> IResult<
     &str,
@@ -580,6 +582,41 @@ pub fn parse_map(
     ))
 }
 
+fn parse_union(
+    input: &str,
+) -> IResult<
+    &str,
+    (
+        Schema,
+        Option<RecordFieldOrder>,
+        Option<Vec<String>>,
+        VarName,
+        Option<Value>,
+    ),
+> {
+    let (tail, schema) = map_type_to_schema(input)?;
+
+    let boxed_schema = Box::new(schema.clone());
+    let default_parser = parse_based_on_schema(boxed_schema);
+    let (tail, ((order, aliases), varname, defaults)) = terminated(
+        tuple((
+            permutation_opt((
+                comment_delimited(parse_order),
+                comment_delimited(parse_aliases),
+            )),
+            comment_delimited(parse_var_name),
+            // default
+            opt(preceded(
+                comment_delimited(tag("=")),
+                map_res(default_parser, |value| value.try_into()),
+            )),
+        )),
+        preceded(space0, comment_delimited(tag(";"))),
+    )(tail)?;
+
+    Ok((tail, (schema, order, aliases, varname, defaults)))
+}
+
 // Samples
 // ```
 // fixed MD5(16);
@@ -630,11 +667,6 @@ fn parse_fixed(
     ))
 }
 
-fn parse_union_default(input: &str) -> IResult<&str, &str> {
-    // This should be take_until ";"
-    preceded(space_delimited(tag("=")), take_until(";"))(input)
-}
-
 fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
     alt((
         preceded(
@@ -644,6 +676,19 @@ fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
                 map(map_type_to_schema, |s| Schema::Array(Box::new(s))),
                 tag(">"),
             ),
+        ),
+        map(
+            preceded(
+                tag("union"),
+                delimited(
+                    space_delimited(tag("{")),
+                    separated_list1(space_delimited(tag(",")), map_type_to_schema),
+                    space_delimited(tag("}")),
+                ),
+            ),
+            |union_schemas| {
+                Schema::Union(UnionSchema::new(union_schemas).expect("Failed to create union schema"))
+            },
         ),
         value(Schema::Null, tag("null")),
         value(Schema::Boolean, tag("boolean")),
@@ -671,54 +716,8 @@ fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
                 }
             },
         ),
-    ))(input)
-}
 
-// Sample
-// ```
-// union { null, string } item_id = null;
-// ```
-// TODO: Handle @order + @alias properly, they can happen in any order, between
-// the list of types and the variable name
-pub fn parse_union(
-    input: &str,
-) -> IResult<
-    &str,
-    (
-        (
-            Vec<Schema>,
-            Option<RecordFieldOrder>,
-            Option<Vec<String>>,
-            VarName,
-        ),
-        Option<Value>,
-    ),
-> {
-    let parse_union_types = preceded(
-        tag("union"),
-        delimited(
-            space_delimited(tag("{")),
-            separated_list1(space_delimited(tag(",")), map_type_to_schema),
-            space_delimited(tag("}")),
-        ),
-    );
-    let (tail, x) = tuple((
-        parse_union_types,
-        opt(parse_order),
-        opt(parse_aliases),
-        parse_var_name,
-    ))(input)?;
-    let first_schema =
-        x.0.first()
-            .expect("there should be at least one schema in the union");
-    let first_schema_kind: SchemaKind = first_schema.into();
-    let (tail, y) = terminated(
-        opt(map_opt(parse_union_default, |v| {
-            Some(map_schema_to_value(v, first_schema_kind.clone()))
-        })),
-        char(';'),
-    )(tail)?;
-    Ok((tail, (x, y)))
+    ))(input)
 }
 
 // Sample
@@ -737,42 +736,6 @@ fn parse_record_name(input: &str) -> IResult<&str, &str> {
     preceded(tag("record"), space_delimited(parse_var_name))(input)
 }
 
-// TODO: Refactor union to stop using this function and replace with parse_based_on_schema
-fn map_schema_to_value(value: &str, schema: SchemaKind) -> Value {
-    match schema {
-        SchemaKind::Null => Value::Null,
-        SchemaKind::Boolean => {
-            let (_, v) = map_bool(value).unwrap();
-            v.try_into().expect("Could not unparse")
-        }
-        SchemaKind::Int => {
-            let (_, v) = map_int(value).unwrap();
-            v.try_into().expect("Could not unparse")
-        }
-        SchemaKind::Long => {
-            let (_, v) = map_long(value).unwrap();
-            v.try_into().expect("Could not unparse")
-        }
-        SchemaKind::Float => {
-            let (_, v) = map_float(value).unwrap();
-            v.try_into().expect("Could not unparse")
-        }
-        SchemaKind::Double => {
-            let (_, v) = map_double(value).unwrap();
-            v.try_into().expect("Could not unparse")
-        }
-        SchemaKind::Bytes => {
-            let (_, v) = map_bytes(value).expect("invalid bytes");
-            v.try_into().expect("Could not unparse")
-        }
-        SchemaKind::String => {
-            let (_, v) = map_string(value).expect("invalid string");
-            v.try_into().expect("Could not unparse")
-        }
-        _ => unimplemented!("Not implemented yet"),
-    }
-}
-
 // Sample
 // This returns a whole schema::RecordField
 // ```
@@ -782,27 +745,12 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
     preceded(
         multispace0,
         comment_delimited(alt((
-            // map(
-            //     tuple((opt(space_delimited(parse_doc)), parse_string)),
-            //     |(doc, (order, aliases, name, default))| RecordField {
-            //         name: name.to_string(),
-            //         doc: doc,
-            //         default: default,
-            //         schema: Schema::String,
-            //         order: order.unwrap_or(RecordFieldOrder::Ascending),
-            //         aliases: aliases,
-            //         position: 0,
-            //         custom_attributes: BTreeMap::new(),
-            //     },
-            // ),
-            map(parse_union, |((schemas, order, aliases, name), default)| {
+            map(parse_union, |(schema, order, aliases, name, default)| {
                 RecordField {
                     name: name.to_string(),
                     doc: None,
                     default: default,
-                    schema: Schema::Union(
-                        UnionSchema::new(schemas).expect("Failed to create union schema"),
-                    ),
+                    schema: schema,
                     order: order.unwrap_or(RecordFieldOrder::Ascending),
                     aliases: aliases,
                     position: 0,
@@ -810,6 +758,18 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
                 }
             }),
             map(parse_map, |(schemas, order, aliases, name, default)| {
+                RecordField {
+                    name: name.to_string(),
+                    doc: None,
+                    default: default,
+                    schema: schemas,
+                    order: order.unwrap_or(RecordFieldOrder::Ascending),
+                    aliases: aliases,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                }
+            }),
+            map(parse_array, |(schemas, order, aliases, name, default)| {
                 RecordField {
                     name: name.to_string(),
                     doc: None,
@@ -1378,26 +1338,24 @@ mod test {
 
     #[rstest]
     #[case(
-        r#"union { null, string } item_id = null;"#, ((vec![Schema::Null, Schema::String], None, None,"item_id"), Some(Value::Null))
+        r#"union { null, string } item_id = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), None, None, "item_id", Some(Value::Null))
     )]
     #[case(
-        r#"union { null, string } item = null;"#, ((vec![Schema::Null, Schema::String], None, None,"item"), Some(Value::Null))
+        r#"union { null, string } item = null;"#, (Schema::Union(UnionSchema::new(vec![Schema::Null, Schema::String]).unwrap()), None, None, "item", Some(Value::Null))
     )]
     #[case(
-        r#"union { int, string } item = 1;"#, ((vec![Schema::Int, Schema::String], None, None,"item"), Some(Value::Number(1.into())))
+        r#"union { int, string } item = 1;"#, (Schema::Union(UnionSchema::new(vec![Schema::Int, Schema::String]).unwrap()), None, None, "item", Some(Value::Number(1.into())))
     )]
     #[case(
-        r#"union { string, int } item = "1";"#, ((vec![Schema::String, Schema::Int], None, None,"item"), Some(Value::String("1".to_string())))
+        r#"union { string, int } item = "1";"#, (Schema::Union(UnionSchema::new(vec![Schema::String, Schema::Int]).unwrap()), None, None, "item", Some(Value::String("1".to_string())))
     )]
     fn test_union(
         #[case] input: &str,
         #[case] expected: (
-            (
-                Vec<Schema>,
-                Option<RecordFieldOrder>,
-                Option<Vec<String>>,
-                VarName,
-            ),
+            Schema,
+            Option<RecordFieldOrder>,
+            Option<Vec<String>>,
+            VarName,
             Option<Value>,
         ),
     ) {
@@ -1430,7 +1388,7 @@ mod test {
     #[case(r#"= holis ;"#, "holis")]
     #[case(r#"= CIRCLE;"#, "CIRCLE")]
     fn test_parse_enum_default(#[case] input: &str, #[case] expected: &str) {
-        assert_eq!(parse_enum_default(input), Ok(("", expected)))
+        assert_eq!(parse_enum_default(input), Ok(("", expected.to_string())))
     }
 
     #[rstest]

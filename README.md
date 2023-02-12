@@ -76,9 +76,12 @@ cargo build
 - [Comments](https://avro.apache.org/docs/1.11.1/idl-language/#comments)
     - [x] doc (`/** foo */`)
     - [x] comments
-        - [ ] TODO: Move everything to use the field_parser
-        - [ ] TODO: Write more tests for comments
+        - [x] Move everything to use the field_parser
+        - [x] Write more tests for comments
 
+## TODO
+
+- [ ] Use a hashmap to store already defined enums, fixed and records
 
 ## Resources
 
