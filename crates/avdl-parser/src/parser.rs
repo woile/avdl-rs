@@ -9,13 +9,14 @@ use nom::bytes::complete::take_till;
 use nom::character::complete::space0;
 
 use nom::combinator::{map_opt, verify};
+
 use nom::multi::separated_list0;
 use nom::sequence::pair;
 use nom::{
-    branch::{alt, permutation},
+    branch::alt,
     bytes::complete::{escaped, tag, take_until, take_while, take_while1},
     character::{
-        complete::{alphanumeric0, alphanumeric1, char, digit1, line_ending, multispace0},
+        complete::{alphanumeric0, alphanumeric1, char, digit1, multispace0},
         streaming::one_of,
     },
     combinator::{cut, map, map_res, opt, value},
@@ -24,9 +25,11 @@ use nom::{
     sequence::{delimited, preceded, terminated, tuple},
     AsChar, IResult, InputTake, InputTakeAtPosition, Parser,
 };
+use nom_permutation::permutation_opt;
 use serde_json::{Map, Number, Value};
 use std::str::FromStr;
 use uuid::Uuid;
+
 // Alias to give more clarity on what is being returned
 type VarName<'a> = &'a str;
 type EnumSymbol<'a> = &'a str;
@@ -145,13 +148,16 @@ fn parse_logical_type(i: &str) -> IResult<&str, Schema> {
         tag("@logicalType"),
         delimited(
             tag("("),
-            map(parse_string_value, |s| match s {
-                "timestamp-micros" => Schema::TimestampMicros,
+            map(parse_string_uni, |s| match s.as_str() {
+                "timestamp-micros" => {
+                    println!("MATHCES");
+                    return Schema::TimestampMicros;
+                }
                 "time-micros" => Schema::TimeMicros,
                 "duration" => Schema::Duration,
                 _ => todo!(),
             }),
-            tag(")"),
+            comment_delimited(tag(")")),
         ),
     )(i)
 }
@@ -478,7 +484,16 @@ pub fn map_float(input: &str) -> IResult<&str, Value> {
 // ```
 pub fn parse_float(
     input: &str,
-) -> IResult<&str, (Schema, Option<RecordFieldOrder>, Option<Vec<String>>, VarName, Option<Value>)> {
+) -> IResult<
+    &str,
+    (
+        Schema,
+        Option<RecordFieldOrder>,
+        Option<Vec<String>>,
+        VarName,
+        Option<Value>,
+    ),
+> {
     parse_logical_field(input)
     // preceded(
     //     tag("float"),
@@ -546,20 +561,23 @@ pub fn parse_logical_field(
         Option<Value>,
     ),
 > {
-    let (tail, logical_schema) =
-        opt(terminated(parse_logical_type, space_delimited(line_ending)))(input)?;
+    let (tail, logical_schema) = opt(comment_delimited(parse_logical_type))(input)?;
+    // opt(terminated(parse_logical_type, space_delimited(line_ending)))(input)?;
     let (tail, schema) = map_type_to_schema(tail)?;
 
     let schema = match logical_schema {
         Some(s) => s,
         None => schema,
     };
+
     let boxed_schema = Box::new(schema.clone());
     let default_parser = parse_based_on_schema(boxed_schema);
-    let (tail, (order, aliases, varname, defaults)) = terminated(
+    let (tail, ((order, aliases), varname, defaults)) = terminated(
         tuple((
-            opt(comment_delimited(parse_order)),
-            opt(comment_delimited(parse_aliases)),
+            permutation_opt((
+                comment_delimited(parse_order),
+                comment_delimited(parse_aliases),
+            )),
             comment_delimited(parse_var_name),
             // default
             opt(preceded(comment_delimited(tag("=")), default_parser)),
@@ -941,49 +959,49 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
     preceded(
         multispace0,
         comment_delimited(alt((
-            map(
-                tuple((opt(space_delimited(parse_doc)), parse_string)),
-                |(doc, (order, aliases, name, default))| RecordField {
-                    name: name.to_string(),
-                    doc: doc,
-                    default: default,
-                    schema: Schema::String,
-                    order: order.unwrap_or(RecordFieldOrder::Ascending),
-                    aliases: aliases,
-                    position: 0,
-                    custom_attributes: BTreeMap::new(),
-                },
-            ),
-            map(parse_boolean, |(order, name, default)| RecordField {
-                name: name.to_string(),
-                doc: None,
-                default: default,
-                schema: Schema::Boolean,
-                order: order.unwrap_or(RecordFieldOrder::Ascending),
-                aliases: None,
-                position: 0,
-                custom_attributes: BTreeMap::new(),
-            }),
-            map(parse_int, |(order, name, default)| RecordField {
-                name: name.to_string(),
-                doc: None,
-                default: default,
-                schema: Schema::Int,
-                order: order.unwrap_or(RecordFieldOrder::Ascending),
-                aliases: None,
-                position: 0,
-                custom_attributes: BTreeMap::new(),
-            }),
-            map(parse_long, |(order, name, default)| RecordField {
-                name: name.to_string(),
-                doc: None,
-                default: default,
-                schema: Schema::Long,
-                order: order.unwrap_or(RecordFieldOrder::Ascending),
-                aliases: None,
-                position: 0,
-                custom_attributes: BTreeMap::new(),
-            }),
+            // map(
+            //     tuple((opt(space_delimited(parse_doc)), parse_string)),
+            //     |(doc, (order, aliases, name, default))| RecordField {
+            //         name: name.to_string(),
+            //         doc: doc,
+            //         default: default,
+            //         schema: Schema::String,
+            //         order: order.unwrap_or(RecordFieldOrder::Ascending),
+            //         aliases: aliases,
+            //         position: 0,
+            //         custom_attributes: BTreeMap::new(),
+            //     },
+            // ),
+            // map(parse_boolean, |(order, name, default)| RecordField {
+            //     name: name.to_string(),
+            //     doc: None,
+            //     default: default,
+            //     schema: Schema::Boolean,
+            //     order: order.unwrap_or(RecordFieldOrder::Ascending),
+            //     aliases: None,
+            //     position: 0,
+            //     custom_attributes: BTreeMap::new(),
+            // }),
+            // map(parse_int, |(order, name, default)| RecordField {
+            //     name: name.to_string(),
+            //     doc: None,
+            //     default: default,
+            //     schema: Schema::Int,
+            //     order: order.unwrap_or(RecordFieldOrder::Ascending),
+            //     aliases: None,
+            //     position: 0,
+            //     custom_attributes: BTreeMap::new(),
+            // }),
+            // map(parse_long, |(order, name, default)| RecordField {
+            //     name: name.to_string(),
+            //     doc: None,
+            //     default: default,
+            //     schema: Schema::Long,
+            //     order: order.unwrap_or(RecordFieldOrder::Ascending),
+            //     aliases: None,
+            //     position: 0,
+            //     custom_attributes: BTreeMap::new(),
+            // }),
             // map(parse_float, |(order, name, default)| RecordField {
             //     name: name.to_string(),
             //     doc: None,
@@ -1066,19 +1084,14 @@ fn parse_field(input: &str) -> IResult<&str, RecordField> {
 // }
 // ```
 pub fn parse_record(input: &str) -> IResult<&str, Schema> {
-    let (tail, ((namespace, aliases), name, fields)) = tuple((
+    let (tail, ((aliases, namespace), name, fields)) = tuple((
         // TODO: Review this permutation, it's only working one of the two permutations
         // Follow https://github.com/Geal/nom/issues/1153
-        permutation((
-            opt(terminated(
-                preceded(multispace0, parse_namespace),
-                tuple((line_ending, multispace0)),
-            )),
-            opt(terminated(
-                preceded(multispace0, map_parse_aliases),
-                tuple((line_ending, multispace0)),
-            )),
+        permutation_opt((
+            comment_delimited(map_parse_aliases),
+            comment_delimited(parse_namespace),
         )),
+        // parse_annotations_unique,
         preceded(multispace0, parse_record_name),
         preceded(
             multispace0,
@@ -1097,6 +1110,11 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
         tail,
         Schema::Record {
             name: name,
+            // aliases: aliases.map(|v| {
+            //     v.into_iter()
+            //         .map(|c| Alias::new(&c).expect("Could not parse alias"))
+            //         .collect()
+            // }),
             aliases: aliases,
             doc: None,
             fields: fields,
@@ -1308,7 +1326,7 @@ mod test {
     #[case("time_ms   age   =   123 ;", (Schema::TimeMillis, None, None, "age", Some(Value::Number(123.into()))))]
     #[case("timestamp_ms age;", (Schema::TimestampMillis, None, None, "age", None))]
     #[case("timestamp_ms age = 12;", (Schema::TimestampMillis, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case(r#"@logicalType("timestamp-micros")\nlong ts = 12;"#, (Schema::TimestampMicros, None, None, "ts", Some(Value::Number(12.into()))))]
+    #[case("@logicalType(\"timestamp-micros\")\nlong ts = 12;", (Schema::TimestampMicros, None, None, "ts", Some(Value::Number(12.into()))))]
     #[case("date age;", (Schema::Date, None, None, "age", None))]
     #[case("date age = 12;", (Schema::Date, None, None, "age", Some(Value::Number(12.into()))))]
     #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, "pk", Some(Value::String("a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8".into()))))]
@@ -1364,7 +1382,13 @@ mod test {
     #[case("float   age   =   123 ;", (Schema::Float, None, None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
     fn test_parse_float_ok(
         #[case] input: &str,
-        #[case] expected: (Schema, Option<RecordFieldOrder>, Option<Vec<String>>, VarName, Option<Value>),
+        #[case] expected: (
+            Schema,
+            Option<RecordFieldOrder>,
+            Option<Vec<String>>,
+            VarName,
+            Option<Value>,
+        ),
     ) {
         assert_eq!(parse_float(input), Ok(("", expected)));
     }

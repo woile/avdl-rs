@@ -30,6 +30,9 @@ cargo build
 - [x] [Alias](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Namespace](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
+- [ ] [Annotations](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
+    - This one is a bit more complicated, there can be 0..N unique annotations to be parsed, they can be
+    before or after the type. See [MultiAnnotations.avdl](tests/samples/MultiAnnotations.avdl)
 - [x] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
     - TODO: default on record?
     - [ ] Why is it not possible to set an `aliases` on a fixed?

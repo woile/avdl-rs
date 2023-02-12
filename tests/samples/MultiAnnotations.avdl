@@ -1,0 +1,14 @@
+protocol MyProtocol {
+
+    @aliases(["org.old.OldRecord", "org.ancient.AncientRecord"])
+    @namespace("org.apache.avro.firstNamespace")
+    record MultiAnnotations {
+        @java-key-class("java.io.File")
+        @figurin("pep")
+        string
+        @java-key-class("java.io.File")
+        @aliases(["fullname"])
+        @order("ignore")
+        name;
+    }
+}
