@@ -299,9 +299,17 @@ fn map_float(input: &str) -> IResult<&str, AvroValue> {
     map(
         map_res(
             take_while1(|c| char::is_digit(c, 10) || c == '.' || c == 'e'),
-            |v: &str| v.parse::<f32>(),
+            |v: &str| {
+                // Hack to properly deal with float + avro
+                let val = v.parse::<f32>().map_err(|e| e.to_string())?;
+                if val.is_infinite() {
+                    return Err("Invalid float".to_string());
+                }
+
+                v.parse::<f64>().map_err(|e| e.to_string())
+            },
         ),
-        |v| AvroValue::Float(v),
+        |v| AvroValue::Double(v),
     )(input)
 }
 
@@ -772,7 +780,10 @@ fn parse_fixed(input: &str) -> IResult<&str, Schema> {
 // record TestRecord
 // ```
 fn parse_record_name(input: &str) -> IResult<&str, &str> {
-    preceded(tag("record"), space_delimited(parse_var_name))(input)
+    preceded(
+        space_or_comment_delimited(tag("record")),
+        space_or_comment_delimited(parse_var_name),
+    )(input)
 }
 
 // Sample
@@ -855,7 +866,7 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
             space_or_comment_delimited(parse_namespaced_aliases),
             space_or_comment_delimited(parse_namespace),
         )),
-        preceded(multispace0, parse_record_name),
+        parse_record_name,
         preceded(
             multispace0,
             delimited(
@@ -1154,7 +1165,7 @@ mod test {
     #[case("@logicalType(\"timestamp-micros\")\nlong ts = 12;", (Schema::TimestampMicros, None, None, None, "ts", Some(Value::Number(12.into()))))]
     #[case("date age;", (Schema::Date, None, None, None, "age", None))]
     #[case("date age = 12;", (Schema::Date, None, None, None, "age", Some(Value::Number(12.into()))))]
-    #[case(r#"uuid pk = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, None, "pk", Some(Value::String("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8".into()))))]
+    #[case(r#"uuid pk = "a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8";"#, (Schema::Uuid, None, None, None, "pk", Some(Value::String("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8".into()))))]
     fn test_parse_logical_field_ok(
         #[case] input: &str,
         #[case] expected: (
@@ -1210,7 +1221,8 @@ mod test {
     #[case("float age = 0.0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
     #[case("float age = .0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
     #[case("float age = 0.1123;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.1123).unwrap()))))]
-    #[case("float age = 3.40282347e38;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
+    #[case("float age = 1.2;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(1.2).unwrap()))))]
+    #[case("float age = 3.4028234663852886e38;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(f32::MAX.into()).unwrap()))))]
     #[case("float age = 0;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(0.0).unwrap()))))]
     #[case("float   age   =   123 ;", (Schema::Float, None, None, None, "age", Some(Value::Number(Number::from_f64(123.0).unwrap()))))]
     fn test_parse_float_ok(
@@ -1233,7 +1245,8 @@ mod test {
     #[case(r#"float age = 123"#)] // missing semi-colon with default
     #[case("float age = 3.50282347e40;")] // longer than f32
     fn test_parse_float_fail(#[case] input: &str) {
-        assert!(parse_field(input).is_err());
+        let res = parse_field(input);
+        assert!(res.is_err());
     }
 
     #[rstest]

@@ -1,8 +1,7 @@
 protocol MyProtocol {
-    fixed IPv4(16);
+    fixed Slug(4);
 
     record FixedField {
-        IPv4 @aliases(["pepe"]) hash;
+        Slug slug = "12345678";
     }
 }
-

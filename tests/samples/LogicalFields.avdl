@@ -1,14 +1,20 @@
 protocol MyProtocol {
     record LogicalFields {
+        decimal(30,12) dec2 = "not a dec";
         time_ms   elapsed   =   123 ;
         timestamp_ms when2 = 123;
         date birth = 123;
         uuid pk = "pepe";
         decimal(30,12) dec = "\u0000\u0000";
-        // decimal(30,12) dec2 = 1.2;
+
 
         @logicalType("timestamp-micros")
         long finishTime;
+
+        @logicalType("decimal") @precision(30) @scale(12)
+        bytes dec3 = "1.2";
+
+
     }
 }
 

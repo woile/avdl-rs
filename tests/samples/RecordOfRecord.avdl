@@ -1,0 +1,18 @@
+protocol MyProtocol {
+    @aliases(["org.foo.KindOf"])
+    enum Kind {
+        FOO,
+        BAR, // the bar enum value
+        BAZ,
+        MyRecordOfRecord
+    } = FOO;
+
+    record RecordOfRecord {
+        Kind status;
+        MyRecordOfRecord user = {"name": "santi"};
+    }
+
+    record MyRecordOfRecord {
+        string name;
+    }
+}
