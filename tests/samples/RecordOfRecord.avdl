@@ -9,10 +9,10 @@ protocol MyProtocol {
 
     record RecordOfRecord {
         Kind status;
-        MyRecordOfRecord user = {"name": "santi"};
+        MyRecordOfRecord user;
     }
 
-    record MyRecordOfRecord {
+    error MyRecordOfRecord {
         string name;
     }
 }

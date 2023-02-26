@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use crate::string_parser::parse_string as parse_string_uni;
-use apache_avro::schema::{Alias, Name, RecordFieldOrder};
+use apache_avro::schema::{Alias, Name, Namespace, RecordFieldOrder};
 use apache_avro::schema::{RecordField, Schema, UnionSchema};
 use apache_avro::types::Value as AvroValue;
 use nom::bytes::complete::take_till;
@@ -14,7 +16,7 @@ use nom::sequence::pair;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until, take_while, take_while1},
-    character::complete::{alphanumeric1, char, digit1, multispace0},
+    character::complete::{char, digit1, multispace0},
     combinator::{cut, map, map_res, opt, value},
     multi::{many1, separated_list1},
     sequence::{delimited, preceded, terminated, tuple},
@@ -253,6 +255,13 @@ fn map_bytes(input: &str) -> IResult<&str, AvroValue> {
     })(input)
 }
 
+fn map_decimal(input: &str) -> IResult<&str, AvroValue> {
+    map(parse_string_uni, |v| {
+        let v: Vec<u8> = Vec::from(v);
+        AvroValue::Decimal(v.into())
+    })(input)
+}
+
 // Sample
 // ```
 // null
@@ -379,7 +388,11 @@ fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
         map(
             preceded(
                 space_or_comment_delimited(tag("decimal")),
-                delimited(tag("("), pair(map_usize, map_usize), tag(")")),
+                delimited(
+                    tag("("),
+                    pair(terminated(map_usize, space_delimited(tag(","))), map_usize),
+                    tag(")"),
+                ),
             ),
             |(precision, scale)| {
                 // TODO: Review If inner should be float or calculated differently
@@ -388,6 +401,13 @@ fn map_type_to_schema(input: &str) -> IResult<&str, Schema> {
                     scale: scale,
                     inner: Box::new(Schema::Bytes),
                 }
+            },
+        ),
+        map_res(
+            space_or_comment_delimited(parse_var_name),
+            |reference_name| -> Result<Schema, String> {
+                let name = Name::new(reference_name).map_err(|_e| "Invalid reference name")?;
+                Ok(Schema::Ref { name })
             },
         ),
     ))(input)
@@ -435,10 +455,11 @@ fn parse_based_on_schema<'r>(
             precision: _,
             scale: _,
             inner: _,
-        } => Box::new(map_bytes),
+        } => Box::new(map_decimal),
         Schema::TimestampMicros => Box::new(map_long),
         Schema::TimeMicros => Box::new(map_long),
         Schema::Duration => todo!("This should be fixed"),
+        Schema::Ref { name: _ } => Box::new(parse_enum_default_symbol),
 
         _ => unimplemented!("Not implemented yet"),
     }
@@ -474,7 +495,7 @@ fn parse_field(
     };
 
     let boxed_schema = Box::new(schema.clone());
-    let default_parser = parse_based_on_schema(boxed_schema);
+    // let default_parser = ;
     let (tail, ((order, aliases), varname, defaults)) = terminated(
         tuple((
             permutation_opt((
@@ -485,7 +506,9 @@ fn parse_field(
             // default
             opt(preceded(
                 space_or_comment_delimited(tag("=")),
-                map_res(default_parser, |value| value.try_into()),
+                map_res(parse_based_on_schema(boxed_schema), |value| {
+                    value.try_into()
+                }),
             )),
         )),
         preceded(space0, space_or_comment_delimited(tag(";"))),
@@ -677,6 +700,10 @@ fn parse_enum_item(input: &str) -> IResult<&str, VarName> {
     space_or_comment_delimited(parse_var_name)(input)
 }
 
+fn parse_enum_default_symbol(input: &str) -> IResult<&str, AvroValue> {
+    map(parse_enum_item, |v| AvroValue::String(v.into()))(input)
+}
+
 // Sample:
 // ```
 // { COIN, NUMBER }
@@ -860,6 +887,7 @@ fn parse_record_field(input: &str) -> IResult<&str, RecordField> {
 // }
 // ```
 pub fn parse_record(input: &str) -> IResult<&str, Schema> {
+    let mut used_field_names = Vec::new();
     let (tail, (doc, (aliases, namespace), name, fields)) = tuple((
         opt(parse_doc),
         permutation_opt((
@@ -871,7 +899,14 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
             multispace0,
             delimited(
                 tag("{"),
-                many1(parse_record_field),
+                many1(map_res(parse_record_field, |f| {
+                    let name = f.name.clone();
+                    if used_field_names.contains(&name) {
+                        return Err("Duplicate field {name}");
+                    }
+                    used_field_names.push(name);
+                    Ok(f)
+                })),
                 preceded(multispace0, tag("}")),
             ),
         ),
@@ -903,7 +938,8 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
 // }
 // ```
 pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
-    let (tail, (_doc, _name, schema)) = tuple((
+    let mut registered_schemas = HashMap::new();
+    let (tail, (_doc, _name, mut schemas)) = tuple((
         opt(parse_doc),
         preceded(
             multispace0,
@@ -914,15 +950,108 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
         ),
         delimited(
             space_delimited(tag("{")),
-            many1(space_or_comment_delimited(alt((
-                parse_record,
-                parse_enum,
-                parse_fixed,
-            )))),
+            many1(space_or_comment_delimited(map_res(
+                alt((parse_record, parse_enum, parse_fixed)),
+                |schema| match &schema {
+                    Schema::Record {
+                        name,
+                        aliases: _,
+                        doc: _,
+                        fields: _,
+                        lookup: _,
+                        attributes: _,
+                    } => {
+                        let name = name.clone();
+                        if registered_schemas.contains_key(&name) {
+                            return Err("Duplicate field {name}");
+                        }
+                        registered_schemas.insert(name, schema.clone());
+                        return Ok(schema);
+                    }
+                    Schema::Fixed {
+                        name,
+                        aliases: _,
+                        doc: _,
+                        size: _,
+                        attributes: _,
+                    } => {
+                        let name = name.clone();
+                        if registered_schemas.contains_key(&name) {
+                            return Err("Duplicate field {name}");
+                        }
+                        registered_schemas.insert(name, schema.clone());
+                        return Ok(schema);
+                    }
+                    Schema::Enum {
+                        name,
+                        aliases: _,
+                        doc: _,
+                        symbols: _,
+                        attributes: _,
+                    } => {
+                        let name = name.clone();
+                        if registered_schemas.contains_key(&name) {
+                            return Err("Duplicate field {name}");
+                        }
+                        registered_schemas.insert(name, schema.clone());
+                        return Ok(schema);
+                    }
+                    Schema::Ref { name } => {
+                        let name = name.clone();
+                        if registered_schemas.contains_key(&name) {
+                            return Err("Duplicate field {name}");
+                        }
+                        registered_schemas.insert(name, schema.clone());
+                        return Ok(schema);
+                    }
+                    _ => todo!(),
+                },
+            ))),
             preceded(multispace0, tag("}")),
         ),
     ))(input)?;
-    Ok((tail, schema))
+    for schema in schemas.iter_mut() {
+        let _ = schema_solver(schema, &mut registered_schemas, &None);
+    }
+
+    Ok((tail, schemas))
+}
+
+enum Operation {
+    NoOp,
+    Swap(Schema),
+}
+
+fn schema_solver(
+    schema: &mut Schema,
+    names_ref: &mut HashMap<Name, Schema>,
+    enclosing_namespace: &Namespace,
+) -> Result<Operation, String> {
+    match schema {
+        Schema::Record { name, fields, .. } => {
+            let fully_qualified_name = name.fully_qualified_name(enclosing_namespace);
+
+            let record_namespace = fully_qualified_name.namespace;
+            for field in fields {
+                let res = schema_solver(&mut field.schema, names_ref, &record_namespace)?;
+                match res {
+                    Operation::Swap(schema) => {
+                        field.schema = schema;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Operation::NoOp)
+        }
+        Schema::Ref { name } => {
+            let fully_qualified_name = name.fully_qualified_name(enclosing_namespace);
+            let found_schema = names_ref
+                .get(&fully_qualified_name)
+                .ok_or("Failed to solve schema".to_string())?;
+            Ok(Operation::Swap(found_schema.clone()))
+        }
+        _ => Ok(Operation::NoOp),
+    }
 }
 
 #[cfg(test)]
@@ -1151,6 +1280,7 @@ mod test {
     }
 
     #[rstest]
+    #[case("decimal(1,2) age = \"1.2\";", (Schema::Decimal { precision: 1, scale: 2, inner: Box::new(Schema::Bytes) }, None, None, None, "age", Some(AvroValue::Decimal("1.2".into()).try_into().unwrap())))]
     #[case("int age;", (Schema::Int, None, None, None, "age", None))]
     #[case("/** How old is */ int age;", (Schema::Int, Some(String::from("How old is")), None, None, "age", None))]
     #[case("int age = 12;", (Schema::Int, None, None, None, "age", Some(Value::Number(12.into()))))]
@@ -1468,6 +1598,7 @@ mod test {
     }
 
     #[rstest]
+    #[case("Pepe Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Ref { name: Name::new("Pepe").unwrap() }, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
     #[case("string Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::String, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
     #[case(r#"string nickname = "Woile";"#, RecordField{ name: String::from("nickname"), doc: None, default: Some(Value::String("Woile".to_string())), schema: Schema::String, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
     #[case("boolean Hello;", RecordField{ name: String::from("Hello"), doc: None, default: None, schema: Schema::Boolean, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
@@ -1484,7 +1615,8 @@ mod test {
     #[case("double Hello = 123;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
     #[case("double Hello = 123.0;", RecordField{ name: String::from("Hello"), doc: None, default: Some(Value::Number(Number::from_f64(123.0).unwrap())), schema: Schema::Double, order: apache_avro::schema::RecordFieldOrder::Ascending, aliases: None, position: 0, custom_attributes: BTreeMap::new() })]
     fn test_parse_field(#[case] input: &str, #[case] expected: RecordField) {
-        assert_eq!(parse_record_field(input), Ok(("", expected)))
+        let res = parse_record_field(input);
+        assert_eq!(res, Ok(("", expected)))
     }
 
     #[test]
@@ -1579,6 +1711,7 @@ mod test {
         };
         assert_eq!(schema, expected);
     }
+
     #[rstest]
     #[case(
         r#"protocol MyProtocol {
@@ -1590,6 +1723,99 @@ mod test {
     fn test_parse_protocol(#[case] input: &str) {
         let r = parse_protocol(input).unwrap();
         println!("{r:#?}");
+    }
+
+    #[rstest]
+    #[case(
+        r#"protocol MyProtocol {
+        record Hello {
+            string name;
+            int name;
+        }
+    }"#
+    )]
+    fn test_parse_protocol_duplicate_error(#[case] input: &str) {
+        let r = parse_protocol(input);
+        // TODO: How to get proper error message?
+        assert!(r.is_err());
+    }
+
+    #[rstest]
+    #[case(
+        r#"protocol MyProtocol {
+        record Hello {
+            string name;
+        }
+        record Parent {
+            Hello santi;
+        }
+    }"#
+    )]
+    fn test_parse_protocol_with_record_of_record(#[case] input: &str) {
+        let (_tail, schemas) = parse_protocol(input).unwrap();
+
+        let expected = vec![
+            Schema::Record {
+                name: Name {
+                    name: "Hello".into(),
+                    namespace: None,
+                },
+                aliases: None,
+                doc: None,
+                fields: vec![RecordField {
+                    name: "name".into(),
+                    doc: None,
+                    aliases: None,
+                    default: None,
+                    schema: Schema::String,
+                    order: RecordFieldOrder::Ascending,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                }],
+                lookup: BTreeMap::new(),
+                attributes: BTreeMap::new(),
+            },
+            Schema::Record {
+                name: Name {
+                    name: "Parent".into(),
+                    namespace: None,
+                },
+                aliases: None,
+                doc: None,
+                fields: vec![RecordField {
+                    name: "santi".into(),
+                    doc: None,
+                    aliases: None,
+                    default: None,
+                    schema: Schema::Record {
+                        name: Name {
+                            name: "Hello".into(),
+                            namespace: None,
+                        },
+                        aliases: None,
+                        doc: None,
+                        fields: vec![RecordField {
+                            name: "name".into(),
+                            doc: None,
+                            aliases: None,
+                            default: None,
+                            schema: Schema::String,
+                            order: RecordFieldOrder::Ascending,
+                            position: 0,
+                            custom_attributes: BTreeMap::new(),
+                        }],
+                        lookup: BTreeMap::new(),
+                        attributes: BTreeMap::new(),
+                    },
+                    order: RecordFieldOrder::Ascending,
+                    position: 0,
+                    custom_attributes: BTreeMap::new(),
+                }],
+                lookup: BTreeMap::new(),
+                attributes: BTreeMap::new(),
+            },
+        ];
+        assert_eq!(expected, schemas)
     }
 
     #[test]

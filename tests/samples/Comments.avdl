@@ -9,5 +9,5 @@ protocol MyProtocol {
         ending here
         */
         float regex /*TODO: change name*/ = 1.2;
-    }
+    };
 }
