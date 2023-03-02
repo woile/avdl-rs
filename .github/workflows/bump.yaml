@@ -1,0 +1,28 @@
+name: Bump version
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  bump-version:
+    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    runs-on: ubuntu-latest
+    name: "Bump version and create changelog with commitizen"
+    steps:
+      - name: Check out
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ssh-key: "${{ secrets.COMMIT_KEY }}"
+          ssh-strict: false
+      - name: Create bump and changelog
+        uses: commitizen-tools/commitizen-action@fix/ssh
+        with:
+          branch: main
+          use_ssh: true
+          push: false
+      - name: Push
+        run: |
+          git push origin --tags

@@ -1,0 +1,9 @@
+[tool]
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"
+version_files = [
+    "crates/avdl-parser/Cargo.toml:^version",
+    "crates/avrokit/Cargo.toml:^version",
+]

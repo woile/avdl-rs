@@ -30,7 +30,7 @@ cargo build
 - [x] [Alias](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Namespace](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
 - [x] [Order](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
-- [ ] [Annotations](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
+- [x] [Annotations](https://avro.apache.org/docs/1.11.1/idl-language/#annotations-for-ordering-and-namespaces)
     - This one is a bit more complicated, there can be 0..N unique annotations to be parsed, they can be
     before or after the type. See [MultiAnnotations.avdl](tests/samples/MultiAnnotations.avdl)
 - [x] [Fixed length](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-fixed-length-field)
@@ -40,9 +40,9 @@ cargo build
     - [x] `Record`
     - [x] `RecordField`
     - [ ] Error
-- [ ] RecordField
+- [x] RecordField
     - Named schema's `aliases` are for the schema's `name` which might be namespaced. Record field's aliases are for the field's `name` which is not namespaced. The field's `type` might be a (namespaced) reference to Schema.[src](https://github.com/apache/avro/pull/2087#discussion_r1101061294)
-- [ ] [Protocol](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-protocol-in-avro-idl)
+- [x] [Protocol](https://avro.apache.org/docs/1.11.1/idl-language/#defining-a-protocol-in-avro-idl)
 - [Primitive types](https://avro.apache.org/docs/1.11.1/idl-language/#primitive-types)
     - [x] `string` = &str
         - [x] properly parse unicode strings
@@ -79,9 +79,6 @@ cargo build
         - [x] Move everything to use the field_parser
         - [x] Write more tests for comments
 
-## TODO
-
-- [ ] Use a hashmap to store already defined enums, fixed and records
 
 ## Resources
 
