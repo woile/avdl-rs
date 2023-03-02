@@ -1,0 +1,44 @@
+@namespace("org.apache.avro.firstNamespace")
+protocol Order {
+    enum Gender {
+        MALE, FEMALE, OTHER
+    }
+
+    record Profile {
+        string full_name;
+        Gender gender;
+        union {null, string} initials = null;
+        union {null, date} date_of_birth = null;
+    }
+
+    record Contact {
+        string email;
+        union {null, string} phone = null;
+    }
+
+    record Customer {
+        Profile profile;
+        Contact contact_info;
+    }
+
+    record Address {
+        string postcode;
+        string house_number;
+        union {null, string} house_extension = null;
+        union {null, string} street = null;
+        union {null, string} city = null;
+    }
+
+    record Product {
+        string id;
+        string description;
+        double price;
+    }
+
+    // @namespace("org.apache.avro.someOtherNamespace")
+    record Order {
+        Customer customer;
+        Address contact_address;
+        Product product;
+    }
+}

@@ -1,6 +1,7 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
+use std::fs;
+
+use thiserror::Error;
 
 use crate::string_parser::parse_string as parse_string_uni;
 use apache_avro::schema::{Alias, Name, Namespace, RecordFieldOrder};
@@ -928,6 +929,69 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
     ))
 }
 
+#[derive(Error, Debug)]
+enum AvdlError {
+    #[error("Failed to import Avsc")]
+    ImportAvscError(#[from] apache_avro::Error),
+
+    #[error("Failed to import Avdl")]
+    ImportIdlError,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Import {
+    Idl,
+    Protocol,
+    Schema,
+}
+
+fn import_solver(
+    importType: Import,
+    path: String,
+    names_ref: &mut HashMap<Name, Schema>,
+) -> Result<Vec<Schema>, AvdlError> {
+    let input = fs::read_to_string(path).expect("Failed to read the file");
+    match importType {
+        Import::Idl => {
+            let (_, (schemas, _namespace)) =
+                parse_protocol(input.as_str(), names_ref).map_err(|_| AvdlError::ImportIdlError)?;
+            return Ok(schemas);
+        }
+        Import::Protocol => todo!(),
+        Import::Schema => Ok(vec![Schema::parse_str(input.as_str())?]),
+    }
+}
+
+fn parse_import(input: &str) -> IResult<&str, (Import, String)> {
+    preceded(
+        space_or_comment_delimited(tag("import")),
+        terminated(
+            tuple((
+                space_or_comment_delimited(alt((
+                    value(Import::Idl, tag("idl")),
+                    value(Import::Protocol, tag("protocol")),
+                    value(Import::Schema, tag("schema")),
+                ))),
+                parse_string_uni,
+            )),
+            space_or_comment_delimited(tag(";")),
+        ),
+    )(input)
+}
+
+fn parse_import_into_schema(input: &str) -> IResult<&str, Vec<Schema>> {
+    map_res(
+        parse_import,
+        |(import, name)| -> Result<Vec<Schema>, String> {
+            match import {
+                Import::Idl => todo!(),
+                Import::Protocol => todo!(),
+                Import::Schema => todo!(),
+            }
+        },
+    )(input)
+}
+
 // Sample:
 // ```
 // protocol Simple {
@@ -937,10 +1001,13 @@ pub fn parse_record(input: &str) -> IResult<&str, Schema> {
 //    }
 // }
 // ```
-pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
-    let mut registered_schemas = HashMap::new();
-    let (tail, (_doc, _name, mut schemas)) = tuple((
+pub fn parse_protocol<'a>(
+    input: &'a str,
+    names_ref: &mut HashMap<Name, Schema>,
+) -> IResult<&'a str, (Vec<Schema>, Namespace)> {
+    let (tail, (_doc, namespace, _name, schemas)) = tuple((
         opt(parse_doc),
+        space_or_comment_delimited(opt(parse_namespace)),
         preceded(
             multispace0,
             preceded(
@@ -952,7 +1019,7 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
             space_delimited(tag("{")),
             many1(space_or_comment_delimited(map_res(
                 alt((parse_record, parse_enum, parse_fixed)),
-                |schema| match &schema {
+                |mut schema| match &mut schema {
                     Schema::Record {
                         name,
                         aliases: _,
@@ -961,11 +1028,12 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
                         lookup: _,
                         attributes: _,
                     } => {
+                        // name.namespace = Some("cagon.org".to_string());
                         let name = name.clone();
-                        if registered_schemas.contains_key(&name) {
+                        if names_ref.contains_key(&name) {
                             return Err("Duplicate field {name}");
                         }
-                        registered_schemas.insert(name, schema.clone());
+                        names_ref.insert(name, schema.clone());
                         return Ok(schema);
                     }
                     Schema::Fixed {
@@ -976,10 +1044,10 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
                         attributes: _,
                     } => {
                         let name = name.clone();
-                        if registered_schemas.contains_key(&name) {
+                        if names_ref.contains_key(&name) {
                             return Err("Duplicate field {name}");
                         }
-                        registered_schemas.insert(name, schema.clone());
+                        names_ref.insert(name, schema.clone());
                         return Ok(schema);
                     }
                     Schema::Enum {
@@ -990,18 +1058,18 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
                         attributes: _,
                     } => {
                         let name = name.clone();
-                        if registered_schemas.contains_key(&name) {
+                        if names_ref.contains_key(&name) {
                             return Err("Duplicate field {name}");
                         }
-                        registered_schemas.insert(name, schema.clone());
+                        names_ref.insert(name, schema.clone());
                         return Ok(schema);
                     }
                     Schema::Ref { name } => {
                         let name = name.clone();
-                        if registered_schemas.contains_key(&name) {
+                        if names_ref.contains_key(&name) {
                             return Err("Duplicate field {name}");
                         }
-                        registered_schemas.insert(name, schema.clone());
+                        names_ref.insert(name, schema.clone());
                         return Ok(schema);
                     }
                     _ => todo!(),
@@ -1010,11 +1078,19 @@ pub fn parse_protocol(input: &str) -> IResult<&str, Vec<Schema>> {
             preceded(multispace0, tag("}")),
         ),
     ))(input)?;
-    for schema in schemas.iter_mut() {
-        let _ = schema_solver(schema, &mut registered_schemas, &None);
-    }
 
-    Ok((tail, schemas))
+    Ok((tail, (schemas, namespace)))
+}
+
+pub fn parse(input: &str) -> IResult<&str, Vec<Schema>> {
+    let mut names_ref = HashMap::new();
+    let (_, (mut schemas, namespace)) = parse_protocol(input, &mut names_ref)?;
+
+    for schema in schemas.iter_mut() {
+        let _ = schema_solver(schema, &mut names_ref, &None);
+        namespace_solver(schema, &namespace);
+    }
+    Ok(("", schemas))
 }
 
 enum Operation {
@@ -1051,6 +1127,15 @@ fn schema_solver(
             Ok(Operation::Swap(found_schema.clone()))
         }
         _ => Ok(Operation::NoOp),
+    }
+}
+
+fn namespace_solver(schema: &mut Schema, enclosing_namespace: &Namespace) -> () {
+    match schema {
+        Schema::Record { name, .. } => {
+            name.namespace = enclosing_namespace.clone();
+        },
+        _ => ()
     }
 }
 
@@ -1619,6 +1704,15 @@ mod test {
         assert_eq!(res, Ok(("", expected)))
     }
 
+    #[rstest]
+    #[case(r#"import idl "foo.avdl";"#, (Import::Idl, String::from("foo.avdl")))]
+    #[case(r#"import protocol "foo.avpr";"#, (Import::Protocol, String::from("foo.avpr")))]
+    #[case(r#"import schema "foo.avsc";"#, (Import::Schema, String::from("foo.avsc")))]
+    fn test_parse_import(#[case] input: &str, #[case] expected: (Import, String)) {
+        let res = parse_import(input);
+        assert_eq!(res, Ok(("", expected)))
+    }
+
     #[test]
     fn test_parse_record() {
         let sample = r#"record Employee {
@@ -1721,7 +1815,8 @@ mod test {
     }"#
     )]
     fn test_parse_protocol(#[case] input: &str) {
-        let r = parse_protocol(input).unwrap();
+        let mut names_ref = HashMap::new();
+        let r = parse_protocol(input, &mut names_ref).unwrap();
         println!("{r:#?}");
     }
 
@@ -1735,7 +1830,8 @@ mod test {
     }"#
     )]
     fn test_parse_protocol_duplicate_error(#[case] input: &str) {
-        let r = parse_protocol(input);
+        let mut names_ref = HashMap::new();
+        let r = parse_protocol(input, &mut names_ref);
         // TODO: How to get proper error message?
         assert!(r.is_err());
     }
@@ -1752,7 +1848,7 @@ mod test {
     }"#
     )]
     fn test_parse_protocol_with_record_of_record(#[case] input: &str) {
-        let (_tail, schemas) = parse_protocol(input).unwrap();
+        let (_tail, schemas) = parse(input).unwrap();
 
         let expected = vec![
             Schema::Record {
@@ -1815,6 +1911,7 @@ mod test {
                 attributes: BTreeMap::new(),
             },
         ];
+
         assert_eq!(expected, schemas)
     }
 

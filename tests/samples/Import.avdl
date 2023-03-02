@@ -1,0 +1,8 @@
+protocol Imp {
+
+    record Imp {
+        string foo;
+        RecordOfRecord bar;
+    }
+    import idl "RecordOfRecord.avdl";
+}

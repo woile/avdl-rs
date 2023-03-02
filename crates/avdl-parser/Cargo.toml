@@ -14,6 +14,7 @@ strum = { default-features = false, version = "0.24.1" }
 strum_macros = { default-features = false, version = "0.24.3" }
 uuid = { default-features = false, version = "1.2.2", features = ["serde", "std"] }
 nom_permutation = "0.1.0"
+thiserror = "1.0.38"
 
 [dev-dependencies]
 rstest = "0.16.0"
