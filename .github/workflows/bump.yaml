@@ -21,8 +21,7 @@ jobs:
         uses: commitizen-tools/commitizen-action@fix/ssh
         with:
           branch: main
-          use_ssh: true
           push: false
       - name: Push
         run: |
-          git push origin --tags
+          git push origin main --tags
